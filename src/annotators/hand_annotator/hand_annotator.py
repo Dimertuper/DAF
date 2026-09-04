@@ -62,7 +62,7 @@ class HandAnnotationRules:
             ``(group, class, os_family, os_type, os_version)`` or None.
         """
 
-        if str(ip_addr) in self.devices:
+        if ip_addr in self.devices:
             return self.devices[ip_addr]
         for network, annotation in self.networks.items():
             if ip_addr in network:

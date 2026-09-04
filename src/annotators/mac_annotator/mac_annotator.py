@@ -212,13 +212,13 @@ class MACAnnotator(DAFModule):
             Flows of the IP.
         """
 
-        macs = self.collect_macs(ip.ip_addr, self._flows_by_ip, self.config["src_mac_field"])
+        macs = self.collect_macs(str(ip.ip_addr), self._flows_by_ip, self.config["src_mac_field"])
         if self._dst_grouped_dfs is not None:
             if "dst_mac_field" not in self.config:
                 logger.warning(
                     "MAC Annotator:: 'dst_ip_field' set but 'dst_mac_field' is missing in mac_annotator configuration. Skipping MAC annotation of dst IPs."
                 )
-            dst_macs = self.collect_macs(ip.ip_addr, self._dst_grouped_dfs, self.config["dst_mac_field"])
+            dst_macs = self.collect_macs(str(ip.ip_addr), self._dst_grouped_dfs, self.config["dst_mac_field"])
             if dst_macs is not None:
                 macs += dst_macs
 
