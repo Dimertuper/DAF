@@ -16,12 +16,14 @@ from pathlib import Path
 
 import pandas as pd
 
+from config import Requirement
+from core import DAFModule
 from ip import Annotation
 
 logger = logging.getLogger("SNI Annotator")
 
 
-class SNI_database:
+class SNIDatabase:
     """SNI Annotator class.
 
     Attributes
@@ -131,201 +133,209 @@ class SNI_database:
         return [os_family, os_type, group, _class]
 
 
-def get_most_common(lst: list) -> str:
-    """Function used to get most common element from list.
+class SNIAnnotator(DAFModule):
+    """Annotate IP addresses by server names (TLS/QUIC SNI, HTTP host, DNS) in their flows.
 
-    Parameters
+    Every configured field produces its own annotation named ``sni_annotator_<field>``.
+
+    Attributes
     ----------
-    lst : list
-        List of elements to get most common from.
-
-    Returns
-    -------
-    str
-        Most common element from list.
+    sni_db : SNIDatabase
+        Database mapping server names to operating systems.
+    fields : list
+        ``[host_field, uri_field]`` pairs present in the dataset.
     """
 
-    if len(lst) == 0:
-        return None
-    counter = Counter(lst).most_common()
+    name = "sni_annotator"
+    description = "SNI Annotation"
+    REQUIREMENTS = (Requirement("db_file", str), Requirement("fields", list))
+    DAF_REQUIREMENTS = (Requirement("min_annotation_count", int),)
 
-    return counter[0][0]
+    @staticmethod
+    def most_common(lst: list) -> str:
+        """Function used to get most common element from list.
 
+        Parameters
+        ----------
+        lst : list
+            List of elements to get most common from.
 
-def get_SNIs_for_ip(ip: str, flows: pd.DataFrame, host_field: str, uri_field) -> list:
-    """Function used to get [host,uri] pairs for given IP address.
+        Returns
+        -------
+        str
+            Most common element from list.
+        """
 
-    Parameters
-    ----------
-    ip : ipaddress.IPv4Address
-        IP address to get TLS SNI for.
-    flows : pd.DataFrame, optional
-        DataFrame with flow records, by default None
-    host_field : str
-        Field in DataFrame with hostnames.
-    uri_field : str
-        Field in DataFrame with URIs.
+        if len(lst) == 0:
+            return None
+        counter = Counter(lst).most_common()
 
-    Returns
-    -------
-    list
-        List of [host,uri] pairs for given IP address.
-    """
+        return counter[0][0]
 
-    if len(flows) == 0:
-        logger.warning("Empty DataFrame")
-        return None
+    @staticmethod
+    def server_names(ip_data: pd.DataFrame, host_field: str, uri_field) -> list:
+        """Function used to get [host,uri] pairs from flows of one IP address.
 
-    ip_data = flows.get(ip, None)
-    if uri_field is not None:
-        snis = (
-            ip_data[ip_data[host_field].notna()][[host_field, uri_field]]
-            .replace({uri_field: {"": None}})
-            .drop_duplicates()
-            .values.tolist()
-        )
-    else:
-        snis = ip_data[host_field].dropna().drop_duplicates().tolist()
-        snis = [[value, None] for value in ip_data[host_field].dropna().drop_duplicates()]
+        Parameters
+        ----------
+        ip_data : pd.DataFrame
+            Flows of the IP address.
+        host_field : str
+            Field in DataFrame with hostnames.
+        uri_field : str
+            Field in DataFrame with URIs.
 
-    if len(snis) > 0:
-        return snis
+        Returns
+        -------
+        list
+            List of [host,uri] pairs for given IP address.
+        """
 
-    return None
+        if ip_data is None or len(ip_data) == 0:
+            return None
 
-
-def get_annotation_from_sni(
-    data: list, sin_database: SNI_database, min_annotation_count: int
-) -> list:
-    """Function used to get annotation based on TLS SNI.                            ----------------- TODO
-
-    Parameters
-    ----------
-    host_names : list
-        List of HTTP hostnames to get annotation for.
-    annotator : sni_annotator.SNI
-        Annotator used to get annotation.
-    min_annotation_count : int
-        Minimal number of annotated samples, needed to assign label.
-
-    Returns
-    -------
-    list
-        List of annotations for given HTTP hostnames.
-    """
-
-    os_family = []
-    os_type = []
-    groups = []
-    classes = []
-    multi_flag = []
-
-    for hosturi in data:
-        t_family, t_type, t_group, t_class = sin_database.get_os(hosturi)
-        if t_family is not None:
-            os_family.append(t_family)
-        if t_type is not None:
-            os_type.append(t_type)
-        if t_group is not None:
-            groups.append(t_group)
-        if t_class is not None:
-            classes.append(t_class)
-
-    if len(set(os_family)) > 1:
-        multi_flag.append(list(set(os_family)))
-
-    if len(os_family) > 0 and Counter(os_family).most_common()[0][1] < min_annotation_count:
-        return [None, None, None, None, None, multi_flag]
-
-    return [
-        get_most_common(groups),
-        get_most_common(classes),
-        get_most_common(os_family),
-        get_most_common(os_type),
-        None,
-        multi_flag,
-    ]
-
-
-def get_fields_from_config(local_config: dict, first_value: pd.DataFrame) -> list:
-    """Function used to get fields from configuration file.
-
-    Parameters
-    ----------
-    local_config : dict
-        Configuration of annotator.
-    first_value : pd.DataFrame
-        DataFrame for first ip, used to check fields.
-
-    Returns
-    -------
-    list
-        _description_
-    """
-
-    fields = []
-    for field in local_config["fields"]:
-        if isinstance(field, list) and len(field) == 2:
-            host, uri = field
+        if uri_field is not None:
+            snis = (
+                ip_data[ip_data[host_field].notna()][[host_field, uri_field]]
+                .replace({uri_field: {"": None}})
+                .drop_duplicates()
+                .values.tolist()
+            )
         else:
-            host = field
-            uri = None
+            snis = ip_data[host_field].dropna().drop_duplicates().tolist()
+            snis = [[value, None] for value in ip_data[host_field].dropna().drop_duplicates()]
 
-        if host not in first_value.columns:
-            logger.error(f"Field {host} not found in dataframe, skipping")
-            continue
-        if uri is not None and uri not in first_value.columns:
-            logger.error(f"Field {uri} not found in dataframe, setting to None")
-            uri = None
+        if len(snis) > 0:
+            return snis
 
-        fields.append([host, uri])
+        return None
 
-    return fields
+    @staticmethod
+    def annotation_from_server_names(
+        data: list, sin_database: SNIDatabase, min_annotation_count: int
+    ) -> list:
+        """Function used to get annotation based on TLS SNI.                            ----------------- TODO
 
+        Parameters
+        ----------
+        host_names : list
+            List of HTTP hostnames to get annotation for.
+        annotator : sni_annotator.SNI
+            Annotator used to get annotation.
+        min_annotation_count : int
+            Minimal number of annotated samples, needed to assign label.
 
-def annotate(ip_addresses: list, config: dict, ip_data_dict=None) -> None:
-    """
-    Annotate a list of IP addresses with SNI-based information using a configured database.
+        Returns
+        -------
+        list
+            List of annotations for given HTTP hostnames.
+        """
 
-    Parameters
-    ----------
-    ip_addresses : list
-        List of IP addresses to annotate.
-    config : dict
-        Dictionarz with DAF configuration settings.
-    ip_data_dict : dict, optional
-        Dictionary, where IP is key and value is pd.DataFrame with flows, by default None
+        os_family = []
+        os_type = []
+        groups = []
+        classes = []
+        multi_flag = []
 
-    Raises
-    ------
-    RuntimeError
-        If the configuration or database file path is missing in the configuration.
-    """
+        for hosturi in data:
+            t_family, t_type, t_group, t_class = sin_database.get_os(hosturi)
+            if t_family is not None:
+                os_family.append(t_family)
+            if t_type is not None:
+                os_type.append(t_type)
+            if t_group is not None:
+                groups.append(t_group)
+            if t_class is not None:
+                classes.append(t_class)
 
-    if "sni_annotator" not in config or "db_file" not in config["sni_annotator"]:
-        logger.error("Configuration or path to database not found in configuration file")
-        raise RuntimeError("SNI Annotator:: Configuration or path to database not found")
-    local_config = config["sni_annotator"]
+        if len(set(os_family)) > 1:
+            multi_flag.append(list(set(os_family)))
 
-    sni_db = SNI_database(local_config["db_file"])
+        if len(os_family) > 0 and Counter(os_family).most_common()[0][1] < min_annotation_count:
+            return [None, None, None, None, None, multi_flag]
 
-    if len(local_config["fields"]) == 0:
-        logger.error("No fields in configuration file, nothing to annotate")
-        return
+        return [
+            SNIAnnotator.most_common(groups),
+            SNIAnnotator.most_common(classes),
+            SNIAnnotator.most_common(os_family),
+            SNIAnnotator.most_common(os_type),
+            None,
+            multi_flag,
+        ]
 
-    _, first_value = next(iter(ip_data_dict.items()))
-    fields = get_fields_from_config(local_config, first_value)
+    @staticmethod
+    def fields_from_config(local_config: dict, first_value: pd.DataFrame) -> list:
+        """Function used to get fields from configuration file.
 
-    total_ips = len(ip_addresses)
-    log_interval = max(1, total_ips // 10)
+        Parameters
+        ----------
+        local_config : dict
+            Configuration of annotator.
+        first_value : pd.DataFrame
+            DataFrame for first ip, used to check fields.
 
-    for cnt_ip, ip in enumerate(ip_addresses, start=1):
-        if config["daf"]["progress_print"] and (cnt_ip % log_interval == 0 or cnt_ip == total_ips):
-            progress = (cnt_ip / total_ips) * 100
-            logger.info(f"    -- SNI Annotation ... {progress:.0f} %")
+        Returns
+        -------
+        list
+            _description_
+        """
 
-        for host, uri in fields:
-            data = get_SNIs_for_ip(str(ip.ip_addr), ip_data_dict, host, uri)
+        fields = []
+        for field in local_config["fields"]:
+            if isinstance(field, list) and len(field) == 2:
+                host, uri = field
+            else:
+                host = field
+                uri = None
+
+            if host not in first_value.columns:
+                logger.error(f"Field {host} not found in dataframe, skipping")
+                continue
+            if uri is not None and uri not in first_value.columns:
+                logger.error(f"Field {uri} not found in dataframe, setting to None")
+                uri = None
+
+            fields.append([host, uri])
+
+        return fields
+
+    def setup(self) -> None:
+        """Load the SNI database."""
+
+        self.sni_db = SNIDatabase(self.config["db_file"])
+        self.fields = []
+
+    def before_run(self, ip_addresses: list, flows_by_ip: dict) -> None:
+        """Select the configured fields present in the flows.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            IP objects that will be annotated.
+        flows_by_ip : dict
+            Flow DataFrames keyed by source IP address string.
+        """
+
+        if len(self.config["fields"]) == 0:
+            logger.error("No fields in configuration file, nothing to annotate")
+            self.fields = []
+            return
+        _, first_value = next(iter(flows_by_ip.items()))
+        self.fields = self.fields_from_config(self.config, first_value)
+
+    def annotate_ip(self, ip, flows=None) -> None:
+        """Annotate one IP address by the server names found in each configured field.
+
+        Parameters
+        ----------
+        ip : IP
+            IP object to annotate.
+        flows : pd.DataFrame, optional
+            Flows of the IP.
+        """
+
+        for host, uri in self.fields:
+            data = self.server_names(flows, host, uri)
             if data is not None:
                 ip.add_data(f"sni_annotator_{host.split(' ')[-1]}", data)
                 (
@@ -335,10 +345,10 @@ def annotate(ip_addresses: list, config: dict, ip_data_dict=None) -> None:
                     os_type,
                     os_version,
                     multi_flag,
-                ) = get_annotation_from_sni(
+                ) = self.annotation_from_server_names(
                     data,
-                    sni_db,
-                    config["daf"]["min_annotation_count"],
+                    self.sni_db,
+                    self.daf_config["min_annotation_count"],
                 )
 
                 if len(multi_flag) > 0:

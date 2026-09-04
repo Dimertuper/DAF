@@ -57,7 +57,7 @@ Output files will be saved to the ../examples directory.
 
 - `--config` (required): Path to YAML configuration file  
 - `--dataset`: Path to CSV dataset with flow records  
-- `--logfile`: True (console), filename (file logging), or False (disable logging)  
+- `--logfile`: `True` (console, default), a filename (file logging), or `False` (disable logging)  
 - `-d`: CSV delimiter. Default: ','  
 - `--reannotation`: Load data from previous annotation JSON file  
 

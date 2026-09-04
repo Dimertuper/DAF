@@ -1,12 +1,12 @@
 #!/usr/bin/python3
 """
-Author(s): Matej Hulák <hulak@cesnet.cz>
+Author(s): Matej Hulák <hulak@cesnet.cz>, Filip Chodura <chodufil@cvut.cz>
 
 Copyright: (C) 2025 CESNET, z.s.p.o.
 SPDX-License-Identifier: BSD-3-Clause
 
 File: output.py
-Description: Functions for exporting IP annotation lists and annotating datasets.
+Description: Naming and writing of the DAF output files.
 """
 
 import argparse
@@ -15,125 +15,234 @@ import logging
 
 import pandas as pd
 
+from config import Configurable, Requirement
+
 logger = logging.getLogger("Output")
 
+ANNOTATION_FIELDS = ("group", "_class", "os_family", "os_type", "os_version")
 
-def export_ip_annotation_list(ip_addresses: list, arg: argparse.Namespace, config: dict) -> None:
-    """Export IP annotation list to a CSV file.
 
-    This function save all IP addresses and their annotations to a CSV file.
-    If the `export_full_annotation`, all annotations are saved. Otherwise, only the final annotation is saved.
+class OutputPaths:
+    """Names of the output files derived from the input files.
 
-    Parameters
+    Attributes
     ----------
-    ip_addresses : list
-        A list of IP addresses to export.
-    arg : argparse.Namespace
-        Command line arguments.
-    config : dict
-        Configuration dictionary.
-
-    Returns
-    -------
-    None
-        This function does not return anything.
+    dataset : str or None
+        Path to the flow dataset.
+    reannotation : str or None
+        Path to the reannotation JSON file.
     """
-    if arg.reannotation is not None:
-        if arg.dataset is not None:
-            filename = f"{arg.dataset.split('.csv')[0]}_ip_annotation_list_reannotation.csv"
-        else:
-            filename = f"{arg.reannotation.split('.json')[0]}_ip_annotation_list_reannotation.csv"
-    else:
-        filename = f"{arg.dataset.split('.csv')[0]}_ip_annotation_list.csv"
 
-    with open(filename, "w", encoding="utf-8") as w:
-        tmp = ["final_annotation"]
-        if config["daf"]["export_full_annotation"]:
-            for key, value in config.items():
-                if key == "daf" or value["enabled"] is False:
-                    continue
-                if key == "sni_annotator":
-                    for x in value["fields"]:
-                        if isinstance(x, list):
-                            tmp.append(f"sni_annotator_{x[0].split(' ')[-1]}")
-                        else:
-                            tmp.append(f"sni_annotator_{x.split(' ')[-1]}")
-                else:
-                    tmp.append(key)
+    def __init__(self, arg: argparse.Namespace) -> None:
+        """Initialize the paths from the command-line arguments.
 
+        Parameters
+        ----------
+        arg : argparse.Namespace
+            Command-line arguments with ``dataset`` and ``reannotation``.
+        """
+
+        self.dataset = arg.dataset
+        self.reannotation = arg.reannotation
+
+    @property
+    def dataset_base(self) -> str:
+        """Return the dataset path without the ``.csv`` suffix."""
+
+        return self.dataset.split(".csv")[0]
+
+    @property
+    def reannotation_base(self) -> str:
+        """Return the reannotation path without the ``.json`` suffix."""
+
+        return self.reannotation.split(".json")[0]
+
+    @property
+    def annotation_list(self) -> str:
+        """Return the path of the IP annotation list CSV."""
+
+        if self.reannotation is not None:
+            base = self.dataset_base if self.dataset is not None else self.reannotation_base
+            return f"{base}_ip_annotation_list_reannotation.csv"
+        return f"{self.dataset_base}_ip_annotation_list.csv"
+
+    @property
+    def annotated_dataset(self) -> str:
+        """Return the path of the annotated dataset CSV."""
+
+        return f"{self.dataset_base}_annotated.csv"
+
+    @property
+    def ip_data(self) -> str:
+        """Return the path of the exported IP data JSON."""
+
+        if self.reannotation is None:
+            return f"{self.dataset_base}_ip_data.json"
+        return f"{self.reannotation_base}_ip_data_updated.json"
+
+
+class AnnotationListExporter(Configurable):
+    """Write the final (and optionally every module's) annotation of each IP to a CSV.
+
+    If ``export_full_annotation`` is enabled, the CSV includes the result of every
+    enabled module; otherwise it contains only the final annotation.
+
+    Attributes
+    ----------
+    config : dict
+        Complete DAF configuration.
+    delimiter : str
+        CSV delimiter.
+    """
+
+    REQUIREMENTS = (Requirement("export_full_annotation", bool),)
+
+    def __init__(self, config: dict, delimiter: str) -> None:
+        """Check the configuration.
+
+        Parameters
+        ----------
+        config : dict
+            Complete DAF configuration.
+        delimiter : str
+            CSV delimiter.
+        """
+
+        self.check_config(config["daf"], "daf")
+        self.config = config
+        self.delimiter = delimiter
+
+    def annotation_names(self) -> list:
+        """Return the annotation names exported as columns.
+
+        Returns
+        -------
+        list
+            ``final_annotation`` followed by the names of the enabled modules.
+        """
+
+        names = ["final_annotation"]
+        if not self.config["daf"]["export_full_annotation"]:
+            return names
+        for key, value in self.config.items():
+            if key == "daf" or value["enabled"] is False:
+                continue
+            if key == "sni_annotator":
+                for x in value["fields"]:
+                    if isinstance(x, list):
+                        names.append(f"sni_annotator_{x[0].split(' ')[-1]}")
+                    else:
+                        names.append(f"sni_annotator_{x.split(' ')[-1]}")
+            else:
+                names.append(key)
+        return names
+
+    def write(self, ip_addresses: list, filename: str) -> None:
+        """Write the annotation list.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Annotated IP objects.
+        filename : str
+            Path of the CSV file.
+        """
+
+        names = self.annotation_names()
         header = ["ip_address", "possible_NAT"]
-        for x in tmp:
+        for name in names:
             header += [
-                f"{x}_group",
-                f"{x}_class",
-                f"{x}_os_family",
-                f"{x}_os_type",
-                f"{x}_os_version",
+                f"{name}_group",
+                f"{name}_class",
+                f"{name}_os_family",
+                f"{name}_os_type",
+                f"{name}_os_version",
             ]
 
-        writer = csv.writer(w, delimiter=arg.d)
-        writer.writerow(header)
-
-        for ip in ip_addresses:
-            nat = False
-            if len(ip.multi_device) > 0:
-                nat = True
-            row = [str(ip.ip_addr)] + [nat] + ip.final_annotation.ret_annotation()
-            if config["daf"]["export_full_annotation"]:
-                for annotator in tmp:
-                    if annotator == "final_annotation":
-                        continue
-                    if annotator in ip.annotations:
-                        row += ip.annotations[annotator].ret_annotation()
+        with open(filename, "w", encoding="utf-8") as w:
+            writer = csv.writer(w, delimiter=self.delimiter)
+            writer.writerow(header)
+            for ip in ip_addresses:
+                row = [str(ip.ip_addr), bool(ip.multi_device)] + ip.final_annotation.ret_annotation()
+                for name in names[1:]:
+                    if name in ip.annotations:
+                        row += ip.annotations[name].ret_annotation()
                     else:
                         row += [None, None, None, None, None]
-            writer.writerow(row)
+                writer.writerow(row)
 
-    logger.info(f"IP annotation saved to file: {filename}")
+        logger.info(f"IP annotation saved to file: {filename}")
 
 
-def annotate_dataset(
-    flows: pd.DataFrame, ip_addresses: list, arg: argparse.Namespace, config: dict
-) -> pd.DataFrame:
-    """TODO: Add docstring"""
+class DatasetAnnotator:
+    """Append the final annotation of the source IP to every flow.
 
-    logger.info("  -- Annotating dataset and saving to file...")
+    Attributes
+    ----------
+    src_ip_field : str
+        Name of the source IP column.
+    annotation_table : pd.DataFrame
+        Final annotation fields indexed by IP address string.
+    """
 
-    annotation_map = {}
+    def __init__(self, ip_addresses: list, src_ip_field: str) -> None:
+        """Build the annotation table of the IPs.
 
-    # Fill the dictionary with IPs and their annotations
-    for ip in ip_addresses:
-        (
-            group,
-            _class,
-            os_family,
-            os_type,
-            os_version,
-        ) = ip.final_annotation.ret_annotation()
-        annotation_map[str(ip.ip_addr)] = {
-            "group": group,
-            "_class": _class,
-            "os_family": os_family,
-            "os_type": os_type,
-            "os_version": os_version,
-        }
+        Parameters
+        ----------
+        ip_addresses : list
+            Annotated IP objects.
+        src_ip_field : str
+            Name of the source IP column.
+        """
 
-    # Vectorized annotation using the mapping
-    src_ip_field = config["daf"]["src_ip_field"]
-    flows["group"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("group"))
-    flows["_class"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("_class"))
-    flows["os_family"] = flows[src_ip_field].map(
-        lambda ip: annotation_map.get(ip, {}).get("os_family")
-    )
-    flows["os_type"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("os_type"))
-    flows["os_version"] = flows[src_ip_field].map(
-        lambda ip: annotation_map.get(ip, {}).get("os_version")
-    )
+        self.src_ip_field = src_ip_field
+        self.annotation_table = pd.DataFrame(
+            [ip.final_annotation.ret_annotation() for ip in ip_addresses],
+            index=pd.Index([str(ip.ip_addr) for ip in ip_addresses], name="ip_address"),
+            columns=ANNOTATION_FIELDS,
+        )
 
-    # Export dataset to CSV
-    output_file = f"{arg.dataset.split('.csv')[0]}_annotated.csv"
-    flows.to_csv(output_file, index=False)
+    def annotate(self, flows: pd.DataFrame) -> pd.DataFrame:
+        """Attach the final annotations to flows by their source IP.
 
-    logger.info(f"Annotated dataset saved to {output_file}")
+        Parameters
+        ----------
+        flows : pd.DataFrame
+            Flow records, modified in place.
 
-    return flows
+        Returns
+        -------
+        pd.DataFrame
+            Flows with the appended annotation columns.
+        """
+
+        annotations = self.annotation_table.reindex(flows[self.src_ip_field].astype(str))
+        annotations.index = flows.index
+        flows[list(ANNOTATION_FIELDS)] = annotations
+        return flows
+
+    def write(self, flows: pd.DataFrame, filename: str) -> pd.DataFrame:
+        """Annotate the flows and save them.
+
+        Parameters
+        ----------
+        flows : pd.DataFrame
+            Flow records.
+        filename : str
+            Path of the annotated CSV.
+
+        Returns
+        -------
+        pd.DataFrame
+            Annotated flows.
+        """
+
+        logger.info("  -- Annotating dataset and saving to file...")
+        flows = self.annotate(flows)
+        flows.to_csv(filename, index=False)
+        logger.info(f"Annotated dataset saved to {filename}")
+        return flows
+
+
+__all__ = ["ANNOTATION_FIELDS", "AnnotationListExporter", "DatasetAnnotator", "OutputPaths"]

@@ -30,13 +30,18 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 py-modules = [
+  "annotation",
+  "config",
+  "core",
   "daf",
+  "dataset",
   "ip",
   "ip_ranges",
-  "load",
+  "loader",
   "output",
+  "pipeline",
   "stats",
-  "annotation"
+  "taxonomy_checker"
 ]
 
 [tool.black]

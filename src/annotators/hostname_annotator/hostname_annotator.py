@@ -14,225 +14,224 @@ import operator as op
 import socket
 import time
 from pathlib import Path
+from typing import List, Optional, Tuple
 
 import pandas as pd
 
+from config import Requirement
+from core import DAFModule
 from ip import Annotation
 
 logger = logging.getLogger("Hostname Annotator")
 
 
-def load_regex_rules(paths: list) -> dict:
-    """
-    Load regex rules from CSV files and return them as a dictionary.
+class HostnameRules:
+    """Rules mapping reverse DNS hostnames to annotations.
 
-    Parameters
+    Three rule sets are used, in this order:
+
+    - full-match: the complete hostname,
+    - sequences: labels of the hostname (split by dots),
+    - subsequences: substrings of the first label (sequences are included too).
+
+    Attributes
     ----------
-    paths : list
-        List of pathlib.Path objects pointing to the CSV files. The order should be:
-        [full-match.csv, sequences.csv, subsequences.csv].
-
-    Returns
-    -------
-    dict
-        Dictionary containing three keys:
-            - "full-match": dict with hostname as key and annotation info as value.
-            - "sequences": dict with sequence as key and annotation info as value.
-            - "subsequences": dict with subsequence as key and annotation info as value,
-              merged with the "sequences" dictionary.
-
-    Raises
-    ------
-    FileNotFoundError
-        If any of the provided paths does not exist.
+    full_match : dict
+        Hostname mapped to annotation fields.
+    sequences : dict
+        Hostname label mapped to annotation fields.
+    subsequences : dict
+        Substring mapped to annotation fields.
     """
-    rules = {
-        "full-match": None,
-        "sequences": None,
-        "subsequences": None,
-    }
-    if not all([p.exists() for p in paths]):
-        logger.error(f"Annotation file {paths} does not exist")
-        raise FileNotFoundError(f"Hostname Annotator, path to database: {paths} does not exist")
 
-    df = pd.read_csv(paths[0])
-    rules["full-match"] = df.set_index("hostname").to_dict("index")
+    FIELDS = ("group", "class", "os-family", "os-type", "os-version")
 
-    df = pd.read_csv(paths[1])
-    rules["sequences"] = df.set_index("sequence").to_dict("index")
+    def __init__(self, full_db: Path, sequences_db: Path, subsequences_db: Path) -> None:
+        """Load the rules from CSV files.
 
-    df = pd.read_csv(paths[2])
-    rules["subsequences"] = df.set_index("subsequence").to_dict("index")
-    rules["subsequences"].update(rules["sequences"])
+        Parameters
+        ----------
+        full_db : pathlib.Path
+            CSV with the column ``hostname`` and the annotation fields.
+        sequences_db : pathlib.Path
+            CSV with the column ``sequence`` and the annotation fields.
+        subsequences_db : pathlib.Path
+            CSV with the column ``subsequence`` and the annotation fields.
 
-    return rules
+        Raises
+        ------
+        FileNotFoundError
+            If any of the files does not exist.
+        """
 
+        paths = [full_db, sequences_db, subsequences_db]
+        if not all(p.exists() for p in paths):
+            logger.error(f"Annotation file {paths} does not exist")
+            raise FileNotFoundError(f"Hostname Annotator, path to database: {paths} does not exist")
 
-def get_regex_name(ip: str) -> str:
-    """
-    Perform a reverse DNS lookup to obtain the hostname for a given IP address.
+        self.full_match = pd.read_csv(full_db).set_index("hostname").to_dict("index")
+        self.sequences = pd.read_csv(sequences_db).set_index("sequence").to_dict("index")
+        self.subsequences = pd.read_csv(subsequences_db).set_index("subsequence").to_dict("index")
+        self.subsequences.update(self.sequences)
 
-    Parameters
-    ----------
-    ip : str
-        IP address as a string.
+    @classmethod
+    def _annotation(cls, rule: dict) -> Annotation:
+        """Create an annotation from the fields of one rule."""
 
-    Returns
-    -------
-    str or None
-        Hostname associated with the given IP address, or None if it cannot be determined.
-    """
-    try:
-        return socket.getnameinfo((ip, 0), 0)[0]
-    except socket.gaierror:
-        return None
+        return Annotation(*(rule[field] for field in cls.FIELDS))
 
+    @staticmethod
+    def _combine(rules: List[dict]) -> Tuple[Optional[Annotation], bool]:
+        """Combine the rules matched by the sequences or subsequences of a hostname.
 
-def annotate_by_sequence(
-    ip,
-    groups: list,
-    classes: list,
-    os_families: list,
-    os_types: list,
-    os_versions: list,
-) -> bool:
-    """
-    Annotate the IP address based on sequences of groups, classes, OS families, OS types, and OS versions.
+        Parameters
+        ----------
+        rules : list
+            Matched rules in the order of matching.
 
-    Parameters
-    ----------
-    ip : TIP
-        IP address object to annotate.
-    groups : list
-        List of group annotations.
-    classes : list
-        List of class annotations.
-    os_families : list
-        List of operating system families.
-    os_types : list
-        List of operating system types.
-    os_versions : list
-        List of operating system versions.
+        Returns
+        -------
+        tuple
+            The annotation (or None) and whether the search is finished. One rule or
+            rules of one group and class finish the search. Rules of one group with
+            different classes give an annotation without class but do not finish it.
+            Rules of different groups finish the search without an annotation.
+        """
 
-    Returns
-    -------
-    bool
-        True if annotation was applied or sequence is not possible to tag, False otherwise.
-    """
-    if len(groups) == 1:
-        ip.add_annotation(
-            "hostname_annotator",
-            Annotation(groups[0], classes[0], os_families[0], os_types[0], os_versions[0]),
+        groups = [rule["group"] for rule in rules]
+        classes = [rule["class"] for rule in rules]
+        if not rules:
+            return None, False
+        first = rules[0]
+        labels = (first["os-family"], first["os-type"], first["os-version"])
+        if len(groups) == 1 or (len(set(groups)) == 1 and len(set(classes)) == 1):
+            return Annotation(groups[0], classes[0], *labels), True
+        if len(set(groups)) == 1:
+            return Annotation(groups[0], None, *labels), False
+        return None, True
+
+    def annotation_for(self, hostname: str) -> Optional[Annotation]:
+        """Return the annotation of a hostname.
+
+        Parameters
+        ----------
+        hostname : str
+            Reverse DNS hostname.
+
+        Returns
+        -------
+        Annotation or None
+            Annotation of the first rule set that decides.
+        """
+
+        if hostname in self.full_match:
+            return self._annotation(self.full_match[hostname])
+
+        labels = hostname.split(".")
+        annotation, finished = self._combine(
+            [self.sequences[label] for label in labels if label in self.sequences]
         )
-        return True
-    elif len(set(groups)) == 1:
-        if len(set(classes)) == 1:
-            ip.add_annotation(
-                "hostname_annotator",
-                Annotation(groups[0], classes[0], os_families[0], os_types[0], os_versions[0]),
-            )
-            return True
-        else:
-            ip.add_annotation(
-                "hostname_annotator",
-                Annotation(groups[0], None, os_families[0], os_types[0], os_versions[0]),
-            )
-    elif len(groups) > 0:
-        # the sequences is not possible to tag because of multiple different groups are find
-        return True
-    return False
+        if finished:
+            return annotation
+
+        subsequence, _ = self._combine(
+            [rule for key, rule in self.subsequences.items() if op.contains(labels[0], key)]
+        )
+        return subsequence if subsequence is not None else annotation
 
 
-def annotate(ip_addresses: list, config: dict, ip_data_dict=None) -> None:
-    """
-    Annotate IP addresses with hostname-based metadata using regex rules.
+class ReverseDNS:
+    """Rate limited reverse DNS lookups.
 
-    Parameters
+    Attributes
     ----------
-    ip_addresses : list
-        List of IP addresses to annotate.
-    config : dict
-        Dictionarz with DAF configuration settings.
-    ip_data_dict : dict, optional
-        Dictionary, where IP is key and value is pd.DataFrame with flows, by default None
-
-    Raises
-    ------
-    RuntimeError
-        If required database paths are missing.
+    timeout : float
+        Minimal delay between two lookups in seconds.
     """
 
-    required_dbs = ["full_db", "sequences_db", "subsequences_db"]
-    if "hostname_annotator" not in config or not all(
-        db in config["hostname_annotator"] for db in required_dbs
-    ):
-        logger.error("Configuration or path to database not found in configuration file")
-        raise RuntimeError("Hostname Annotator:: Configuration or path to databases not found")
+    def __init__(self, timeout: float) -> None:
+        """Initialize the resolver.
 
-    rules = load_regex_rules([Path(config["hostname_annotator"][db]) for db in required_dbs])
-    timeout = config["hostname_annotator"].get("timeout", 0.00001)
+        Parameters
+        ----------
+        timeout : float
+            Minimal delay between two lookups in seconds.
+        """
 
-    total_ips = len(ip_addresses)
-    log_interval = max(1, total_ips // 10)
-    timestamp = time.time()
-    for cnt_ip, ip in enumerate(ip_addresses, start=1):
-        if config["daf"]["progress_print"] and (cnt_ip % log_interval == 0 or cnt_ip == total_ips):
-            progress = (cnt_ip / total_ips) * 100
-            logger.info(f"    -- reverse DNS queries annotation ... {progress:.0f} %")
+        self.timeout = timeout
+        self._timestamp = time.time()
 
-        elapsed = time.time() - timestamp
-        if elapsed < timeout:
-            time.sleep(timeout - elapsed)
-        timestamp = time.time()
+    def resolve(self, ip: str) -> Optional[str]:
+        """Return the hostname of an IP address.
 
-        hostname = get_regex_name(str(ip.ip_addr))
+        Parameters
+        ----------
+        ip : str
+            IP address.
 
+        Returns
+        -------
+        str or None
+            Hostname, or None if it cannot be determined.
+        """
+
+        elapsed = time.time() - self._timestamp
+        if elapsed < self.timeout:
+            time.sleep(self.timeout - elapsed)
+        self._timestamp = time.time()
+
+        try:
+            return socket.getnameinfo((ip, 0), 0)[0]
+        except socket.gaierror:
+            return None
+
+
+class HostnameAnnotator(DAFModule):
+    """Annotate IP addresses by rules matched against their reverse DNS hostname.
+
+    Attributes
+    ----------
+    rules : HostnameRules
+        Loaded rules.
+    resolver : ReverseDNS
+        Resolver of hostnames.
+    """
+
+    name = "hostname_annotator"
+    description = "reverse DNS queries annotation"
+    REQUIREMENTS = (
+        Requirement("full_db", str),
+        Requirement("sequences_db", str),
+        Requirement("subsequences_db", str),
+        Requirement("timeout", (int, float), default=0.00001, minimum=0),
+    )
+
+    def setup(self) -> None:
+        """Load the hostname rules."""
+
+        self.rules = HostnameRules(
+            Path(self.config["full_db"]),
+            Path(self.config["sequences_db"]),
+            Path(self.config["subsequences_db"]),
+        )
+        self.resolver = ReverseDNS(self.config["timeout"])
+
+    def annotate_ip(self, ip, flows=None) -> None:
+        """Resolve the hostname of one IP address and annotate it.
+
+        Parameters
+        ----------
+        ip : IP
+            IP object to annotate.
+        flows : pd.DataFrame, optional
+            Not used.
+        """
+
+        hostname = self.resolver.resolve(str(ip.ip_addr))
         if hostname is None:
-            continue
+            return
         ip.add_data("hostname_annotator", hostname)
 
-        # full-math
-        if hostname in rules["full-match"]:
-            ip.add_annotation(
-                "hostname_annotator",
-                Annotation(
-                    rules["full-match"][hostname]["group"],
-                    rules["full-match"][hostname]["class"],
-                    rules["full-match"][hostname]["os-family"],
-                    rules["full-match"][hostname]["os-type"],
-                    rules["full-match"][hostname]["os-version"],
-                ),
-            )
-            continue
-        # sequences
-        splitted_revers_dns = hostname.split(".")
-        groups = []
-        classes = []
-        os_families = []
-        os_types = []
-        os_versions = []
-        for i in splitted_revers_dns:
-            if i in rules["sequences"]:
-                groups.append(rules["sequences"][i]["group"])
-                classes.append(rules["sequences"][i]["class"])
-                os_families.append(rules["sequences"][i]["os-family"])
-                os_types.append(rules["sequences"][i]["os-type"])
-                os_versions.append(rules["sequences"][i]["os-version"])
-        if annotate_by_sequence(ip, groups, classes, os_families, os_types, os_versions):
-            continue
-        # subsequences
-        groups = []
-        classes = []
-        os_families = []
-        os_types = []
-        os_versions = []
-        for key in rules["subsequences"]:
-            if op.contains(splitted_revers_dns[0], key):
-                groups.append(rules["subsequences"][key]["group"])
-                classes.append(rules["subsequences"][key]["class"])
-                os_families.append(rules["subsequences"][key]["os-family"])
-                os_types.append(rules["subsequences"][key]["os-type"])
-                os_versions.append(rules["subsequences"][key]["os-version"])
-        annotate_by_sequence(ip, groups, classes, os_families, os_types, os_versions)
-
-    logger.info("    -- reverse DNS queries annotation ... DONE")
+        annotation = self.rules.annotation_for(hostname)
+        if annotation is not None:
+            ip.add_annotation("hostname_annotator", annotation)

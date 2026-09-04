@@ -5,7 +5,7 @@ Author(s): Matej Hulák <hulak@cesnet.cz>
 Copyright: (C) 2025 CESNET, z.s.p.o.
 SPDX-License-Identifier: BSD-3-Clause
 
-File: taxonomy.py
+File: taxonomy_checker.py
 Description: Handles loading and validation of OS and device taxonomies from JSON files.
 """
 from __future__ import annotations
@@ -15,13 +15,15 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from config import Configurable, Requirement
+
 if TYPE_CHECKING:
     from annotation import Annotation
 
-logger = logging.getLogger("Taxonomy_checker")
+logger = logging.getLogger("TaxonomyChecker")
 
 
-class Taxonomy_checker:
+class TaxonomyChecker(Configurable):
     """
     Handles loading and validation of OS and device taxonomies from JSON files.
 
@@ -33,6 +35,29 @@ class Taxonomy_checker:
         Dictionary representing the loaded device taxonomy.
 
     """
+
+    REQUIREMENTS = (
+        Requirement("os_taxonomy_path", str, path="file"),
+        Requirement("device_taxonomy_path", str, path="file"),
+    )
+
+    @classmethod
+    def from_config(cls, config: dict) -> TaxonomyChecker:
+        """Create the checker from the taxonomy paths of the ``daf`` section.
+
+        Parameters
+        ----------
+        config : dict
+            Complete DAF configuration.
+
+        Returns
+        -------
+        TaxonomyChecker
+            Loaded taxonomies.
+        """
+
+        daf_config = cls.check_config(config["daf"], "daf")
+        return cls(daf_config["os_taxonomy_path"], daf_config["device_taxonomy_path"])
 
     def __init__(self, os_tax_file: str, dev_tax_file: str):
         """

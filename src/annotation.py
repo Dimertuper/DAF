@@ -15,7 +15,7 @@ from typing import TypeVar
 
 from pandas import isna
 
-from taxonomy_checker import Taxonomy_checker
+from taxonomy_checker import TaxonomyChecker
 
 TAnnotation = TypeVar("TAnnotation", bound="Annotation")
 
@@ -24,7 +24,7 @@ logger = logging.getLogger("Annotation")
 
 class Annotation:
     # Shared taxonomy checker instance
-    _taxonomy_checker: Taxonomy_checker = None
+    _taxonomy_checker: TaxonomyChecker = None
 
     @classmethod
     def initialize_taxonomy_checker(cls, os_tax_file: str, dev_tax_file: str) -> None:
@@ -38,10 +38,22 @@ class Annotation:
         dev_tax_file : str
             Path to the device taxonomy file.
         """
-        cls._taxonomy_checker = Taxonomy_checker(os_tax_file, dev_tax_file)
+        cls._taxonomy_checker = TaxonomyChecker(os_tax_file, dev_tax_file)
 
     @classmethod
-    def _get_taxonomy(cls) -> Taxonomy_checker:
+    def set_taxonomy_checker(cls, checker: TaxonomyChecker) -> None:
+        """
+        Set the shared taxonomy checker instance.
+
+        Parameters
+        ----------
+        checker : TaxonomyChecker
+            Loaded taxonomies.
+        """
+        cls._taxonomy_checker = checker
+
+    @classmethod
+    def _get_taxonomy(cls) -> TaxonomyChecker:
         """
         Returns the configured taxonomy checker instance.
         This method retrieves the taxonomy checker object associated with the class.
@@ -51,7 +63,7 @@ class Annotation:
 
         Returns
         -------
-        Taxonomy_checker
+        TaxonomyChecker
             The configured taxonomy checker instance.
 
         Raises

@@ -10,13 +10,12 @@ Description: Defines the IP class for representing and annotating IP addresses,
 including methods for merging annotations, exporting/importing data, and handling annotation conflicts.
 """
 
-import argparse
 import ipaddress
 import json
 import logging
 from collections import Counter
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Iterable, Iterator, TypeVar, Union
 
 from annotation import Annotation
 
@@ -316,57 +315,146 @@ class IP:
         loaded_ip.data = data.get("data", {})
         loaded_ip.hand_miss = data.get("hand_miss", [])
         loaded_ip.one_miss = data.get("one_miss", [])
-        loaded_ip.multi_device = data.get("multi_device", {})
+        loaded_ip.multi_device = data.get("multi_device", [])
 
         return loaded_ip
 
 
-def export_ip_data(ip_addresses: list, arg: argparse.Namespace) -> None:
-    """Export IP data to a file.
+class IPCollection:
+    """Ordered collection of IP objects without duplicate addresses.
 
-    Parameters
+    When an address is added more than once, the first object is kept, so e.g. saved
+    reannotation objects win over newly created ones.
+
+    Attributes
     ----------
-    ip_addresses : list
-        A list of IP addresses to export.
-    arg : argparse.Namespace
-        Command line arguments.
+    ips : dict
+        IP objects keyed by IP address string, in insertion order.
     """
 
-    # Collect data
-    export_data = [ip.export() for ip in ip_addresses]
+    def __init__(self, *ip_lists: Iterable) -> None:
+        """Create the collection from lists of IP objects.
 
-    # Write data
-    if arg.reannotation is None:
-        with open(f"{arg.dataset.split('.csv')[0]}_ip_data.json", "w", encoding="utf-8") as f:
-            json.dump(export_data, f, indent=4)
-    else:
-        with open(
-            f"{arg.reannotation.split('.json')[0]}_ip_data_updated.json",
-            "w",
-            encoding="utf-8",
-        ) as f:
-            json.dump(export_data, f, indent=4)
+        Parameters
+        ----------
+        *ip_lists : Iterable
+            Ordered iterables of :class:`IP` objects.
+        """
+
+        self.ips = {}
+        for ip_list in ip_lists:
+            self.extend(ip_list)
+
+    def add(self, ip: IP) -> bool:
+        """Add an IP object unless its address is already present.
+
+        Parameters
+        ----------
+        ip : IP
+            IP object.
+
+        Returns
+        -------
+        bool
+            True if the object was added.
+        """
+
+        key = str(ip.ip_addr)
+        if key in self.ips:
+            return False
+        self.ips[key] = ip
+        return True
+
+    def extend(self, ip_list: Iterable) -> None:
+        """Add IP objects whose addresses are not present yet.
+
+        Parameters
+        ----------
+        ip_list : Iterable
+            IP objects.
+        """
+
+        for ip in ip_list:
+            self.add(ip)
+
+    def keys(self) -> set:
+        """Return the IP address strings of the collection."""
+
+        return set(self.ips)
+
+    def __contains__(self, ip_addr: object) -> bool:
+        """Return whether an address (string or IP object) is in the collection."""
+
+        return str(ip_addr.ip_addr if isinstance(ip_addr, IP) else ip_addr) in self.ips
+
+    def __iter__(self) -> Iterator[IP]:
+        """Iterate over the IP objects in insertion order."""
+
+        return iter(self.ips.values())
+
+    def __len__(self) -> int:
+        """Return the number of IP objects."""
+
+        return len(self.ips)
+
+    def to_list(self) -> list:
+        """Return the IP objects as a list."""
+
+        return list(self.ips.values())
 
 
-def load_ip_data(filename: str) -> list:
-    """Load IP data from a file.
+class IPDataFile:
+    """JSON file with the complete state of annotated IP addresses.
 
-    Parameters
+    Attributes
     ----------
-    filename : str
-        The name of the file to load the IP data from.
-
-    Returns
-    -------
-    list
-        A list of IP objects.
+    path : pathlib.Path
+        Path to the JSON file.
     """
-    path = Path(filename)
-    if not path.is_file():
-        logger.error("load_ip_data: path to reannotation file is not specified or incorrect")
-        raise ValueError("load_ip_data: path to reannotation file is not specified or incorrect")
 
-    with open(filename, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    def __init__(self, path: Union[str, Path]) -> None:
+        """Initialize the file.
 
-    return [IP.load(item) for item in data]
+        Parameters
+        ----------
+        path : str or pathlib.Path
+            Path to the JSON file.
+        """
+
+        self.path = Path(path)
+
+    def save(self, ip_addresses: Iterable) -> None:
+        """Export IP objects to the file.
+
+        Parameters
+        ----------
+        ip_addresses : Iterable
+            IP objects to export.
+        """
+
+        export_data = [ip.export() for ip in ip_addresses]
+        with open(self.path, "w", encoding="utf-8") as f:
+            json.dump(export_data, f, indent=4)
+
+    def load(self) -> list:
+        """Load IP objects from the file.
+
+        Returns
+        -------
+        list
+            Loaded IP objects.
+
+        Raises
+        ------
+        ValueError
+            If the file does not exist.
+        """
+
+        if not self.path.is_file():
+            logger.error("load_ip_data: path to reannotation file is not specified or incorrect")
+            raise ValueError("load_ip_data: path to reannotation file is not specified or incorrect")
+
+        with open(self.path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return [IP.load(item) for item in data]

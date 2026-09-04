@@ -10,55 +10,47 @@ Description: Provides MAC address-based device annotation using OUI database.
 """
 
 import csv
-import ipaddress
 import logging
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 
+from config import Requirement
+from core import DAFModule
 from ip import Annotation
 
 logger = logging.getLogger("MAC Annotator")
 
 
-class OUI_database:
-    """MAC Annotator class.
+class OUIDatabase:
+    """Database mapping MAC address OUIs to vendors and operating system families.
 
     Attributes
     ----------
-    os_db : dict[dict[str, str]]
-        Dictionary with MAC as key and vendor and os family as values.
+    os_db : dict
+        OUI mapped to ``{"vendor": ..., "os": ...}``.
     """
 
-    def __init__(self, config):
-        """MAC Annotator constructor.
+    def __init__(self, db_file: str) -> None:
+        """Load the database.
 
         Parameters
         ----------
-        config_path : str, optional
-            Path to configuration file, by default None
+        db_file : str
+            Path to the CSV database with ``OUI, vendor, OS family`` rows.
 
         Raises
         ------
         FileNotFoundError
-            Raised when config file is not found.
+            If the database file does not exist.
         ValueError
-            Raised when config file is not valid YAML.
-        ValueError
-            Raised when db_file is not found in the config file.
-        FileNotFoundError
-            Raised when path to db_file does not exist.
-        ValueError
-            Raised when database is not loaded.
+            If the database cannot be loaded.
         """
 
         self.os_db = None
 
-        if "db_file" not in config["mac_annotator"]:
-            logger.error("MAC_annotator:: db_file not found in the config file")
-            raise ValueError("MAC_annotator:: db_file not found in the config file")
-
-        db_path = Path(config["mac_annotator"]["db_file"])
+        db_path = Path(db_file)
         if not db_path.exists():
             logger.error(f"MAC_annotator:: database file {db_path} does not exist")
             raise FileNotFoundError(
@@ -73,8 +65,8 @@ class OUI_database:
             logger.error("Unable to load database")
             raise ValueError("MAC_annotator:: Unable to load database")
 
-    def get_os(self, oui: str) -> str:
-        """Function used to get OS family for given MAC.
+    def get_os(self, oui: str) -> Optional[str]:
+        """Return the OS family of an OUI.
 
         Parameters
         ----------
@@ -83,7 +75,7 @@ class OUI_database:
 
         Returns
         -------
-        str
+        str or None
             OS family for given OUI.
         """
 
@@ -92,150 +84,149 @@ class OUI_database:
 
         return None
 
+    def annotation_for(self, mac: str) -> list:
+        """Return the annotation fields of a MAC address.
 
-def get_mac_for_ip(config, ip: ipaddress.IPv4Address, flows, field) -> list:
-    """Function used to get MAC address for given IP.
+        Parameters
+        ----------
+        mac : str
+            MAC address.
 
-    Parameters
+        Returns
+        -------
+        list
+            Group, class and OS family.
+        """
+
+        group = _class = family = None
+
+        if len(mac) > 8:
+            mac = mac[:8]
+
+        family = self.get_os(mac)
+
+        if family == "android":
+            group = "end-device"
+            _class = "mobile"
+
+        if family == "macos":
+            group = "end-device"
+
+        return [group, _class, family]
+
+
+class MACAnnotator(DAFModule):
+    """Annotate IP addresses by the vendor (OUI) of the MAC addresses in their flows.
+
+    If an IP uses more than one MAC address, it is flagged as a possible multi-device.
+
+    Attributes
     ----------
-    ip : ipaddress.IPv4Address
-        IP address to get MAC for.
-    arg : argparse.Namespace
-        Arguments from command line.
-    flows : pd.DataFrame, optional
-        DataFrame with flow records, by default None
-    filename : str, optional
-        File used to store partial results, by default None.
-
-    Returns
-    -------
-    list
-        List with MAC addresses for given IP.
+    oui_database : OUIDatabase
+        Database mapping OUIs to vendors and operating systems.
     """
 
-    if flows is None:
+    name = "mac_annotator"
+    description = "MAC annotation"
+    REQUIREMENTS = (
+        Requirement("db_file", str),
+        Requirement("src_mac_field", str),
+        Requirement("dst_mac_field", str, required=False),
+    )
+    DAF_REQUIREMENTS = (Requirement("dst_ip_field", str, default=None),)
+
+    @staticmethod
+    def collect_macs(ip, flows_by_ip: Optional[dict], field: str) -> Optional[list]:
+        """Return the distinct MAC addresses of an IP.
+
+        Parameters
+        ----------
+        ip : str
+            Key of the IP in ``flows_by_ip``.
+        flows_by_ip : dict or None
+            Flow DataFrames keyed by IP address.
+        field : str
+            MAC address column.
+
+        Returns
+        -------
+        list or None
+            MAC addresses, or None if there are none.
+        """
+
+        if flows_by_ip is None:
+            return None
+
+        ip_data = flows_by_ip.get(ip, None)
+        if ip_data is not None:
+            macs = ip_data[field].dropna().drop_duplicates().tolist()
+            if len(macs) > 0:
+                return macs
+
         return None
 
-    ip_data = flows.get(ip, None)
-    if ip_data is not None:
-        macs = ip_data[field].dropna().drop_duplicates().tolist()
-        if len(macs) > 0:
-            return macs
+    def setup(self) -> None:
+        """Load the OUI database."""
 
-    return None
+        self.oui_database = OUIDatabase(self.config["db_file"])
 
+    def before_run(self, ip_addresses: list, flows_by_ip: dict) -> None:
+        """Check the MAC column and group flows by destination IP if configured.
 
-def get_annotation_based_on_mac(mac: str, annotator: OUI_database) -> list:
-    """Function used to get annotation based on MAC address.
+        Parameters
+        ----------
+        ip_addresses : list
+            IP objects that will be annotated.
+        flows_by_ip : dict
+            Flow DataFrames keyed by source IP address string.
 
-    Parameters
-    ----------
-    mac : str
-        MAC address to get annotation for.
-    annotator : MacAnnotator
-        Annotator used to get annotation.
+        Raises
+        ------
+        ValueError
+            If the source MAC column is missing.
+        """
 
-    Returns
-    -------
-    list
-        List with group, class and family.
-    """
+        self._flows_by_ip = flows_by_ip
+        _, first_value = next(iter(flows_by_ip.items()))
+        if self.config["src_mac_field"] not in first_value.columns:
+            logger.error(f"Column {self.config['src_mac_field']} not found in the dataframe")
+            raise ValueError(
+                f"MAC Annotator:: Column {self.config['src_mac_field']} not found in the dataframe"
+            )
 
-    group = _class = family = None
+        self._dst_grouped_dfs = None
+        if self.daf_config["dst_ip_field"] is not None:
+            self._dst_grouped_dfs = {
+                k: v
+                for k, v in pd.concat(flows_by_ip.values()).groupby(self.daf_config["dst_ip_field"])
+            }
 
-    if len(mac) > 8:
-        mac = mac[:8]
+    def annotate_ip(self, ip, flows=None) -> None:
+        """Annotate one IP address by its MAC address.
 
-    family = annotator.get_os(mac)
+        Parameters
+        ----------
+        ip : IP
+            IP object to annotate.
+        flows : pd.DataFrame, optional
+            Flows of the IP.
+        """
 
-    if family == "android":
-        group = "end-device"
-        _class = "mobile"
-
-    if family == "macos":
-        group = "end-device"
-
-    return [group, _class, family]
-
-
-def annotate(ip_addresses: list, config: dict, ip_data_dict=None) -> None:
-    """Function used to annotate IP addresses based on MAC addresses.
-
-    Parameters
-    ----------
-    ip_addresses : list
-        List of IP addresses to annotate.
-    config : dict
-        Dictionarz with DAF configuration settings.
-    ip_data_dict : dict, optional
-        Dictionary, where IP is key and value is pd.DataFrame with flows, by default None
-
-    Raises
-    ------
-    ValueError
-        Raised when module config file is not valid YAML.
-    FileNotFoundError
-        Raised when module config file is not found.
-    ValueError
-        Raised when db_file is not found in the config file.
-    ValueError
-        Raised when column src_ip or mac field is not found in the dataframe.
-    """
-
-    if "mac_annotator" not in config or "db_file" not in config["mac_annotator"]:
-        logger.error("Configuration or path to database not found in configuration file")
-        raise RuntimeError("MAC Annotator:: Configuration or path to databases not found")
-
-    local_config = config["mac_annotator"]
-    annotator = OUI_database(config)
-
-    _, first_value = next(iter(ip_data_dict.items()))
-    if (
-        "src_mac_field" not in local_config
-        or local_config["src_mac_field"] not in first_value.columns
-    ):
-        logger.error(f"Column {local_config['src_mac_field']} not found in the dataframe")
-        raise ValueError(
-            f"MAC Annotator:: Column {local_config['src_mac_field']} not found in the dataframe"
-        )
-
-    if config["daf"]["dst_ip_field"] is not None:
-        dst_grouped_dfs = {
-            k: v for k, v in pd.concat(ip_data_dict.values()).groupby(config["daf"]["dst_ip_field"])
-        }
-
-    total_ips = len(ip_addresses)
-    log_interval = max(1, total_ips // 10)
-
-    for cnt_ip, ip in enumerate(ip_addresses, start=1):
-        if config["daf"]["progress_print"] and (cnt_ip % log_interval == 0 or cnt_ip == total_ips):
-            progress = (cnt_ip / total_ips) * 100
-            logger.info(f"    -- MAC annotation ... {progress:.0f} %")
-
-        macs = get_mac_for_ip(
-            config, ip.ip_addr, flows=ip_data_dict, field=local_config["src_mac_field"]
-        )
-        if config["daf"]["dst_ip_field"] is not None:
-            if "dst_mac_field" not in local_config:
+        macs = self.collect_macs(ip.ip_addr, self._flows_by_ip, self.config["src_mac_field"])
+        if self._dst_grouped_dfs is not None:
+            if "dst_mac_field" not in self.config:
                 logger.warning(
                     "MAC Annotator:: 'dst_ip_field' set but 'dst_mac_field' is missing in mac_annotator configuration. Skipping MAC annotation of dst IPs."
                 )
-            dst_macs = get_mac_for_ip(
-                config,
-                ip.ip_addr,
-                flows=dst_grouped_dfs,
-                field=local_config["dst_mac_field"],
-            )
+            dst_macs = self.collect_macs(ip.ip_addr, self._dst_grouped_dfs, self.config["dst_mac_field"])
             if dst_macs is not None:
                 macs += dst_macs
 
         if macs is not None:
             if len(macs) > 1:
                 ip.multi_device.append(["MAC", macs])
-                continue
+                return
             ip.add_data("mac_annotator", macs)
 
-            group, _class, os_family = get_annotation_based_on_mac(macs[0], annotator)
+            group, _class, os_family = self.oui_database.annotation_for(macs[0])
             ip.add_annotation("mac_annotator", Annotation(group, _class, os_family, None, None))
-
-    logger.info("    -- MAC annotation ...  DONE")
