@@ -12,12 +12,19 @@ authors = [
 ]
 description = "Device Annotation Framework (DAF): annotate flow records with metadata"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { file = "LICENCE" }
 dependencies = [
   "pandas>=1.5",
   "pyyaml>=6.0",
   "requests>=2.32"
+]
+
+[project.optional-dependencies]
+nat_detector = [
+  "joblib>=1.3",
+  "lightgbm==4.6.0",
+  "scikit-learn==1.6.1",
 ]
 
 [project.scripts]

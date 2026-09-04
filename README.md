@@ -28,9 +28,15 @@ pip install -U pip
 pip install -e .        # install in editable mode
 ```
 
+Alternatively, using `uv`:
+
+```sh
+uv sync
+```
+
 ### Requirements
 
-- Python 3.9+  
+- Python 3.10+
 - `pandas`, `pyyaml`, and `requests`  
 - Annotator modules (in `./annotators` or specified path)  
 
@@ -78,7 +84,19 @@ daf:
 nat_detector:
   enabled: True
   path: auto
-  field: ...
+  model_path: ./detectors/nat_detector/final_models/decision_tree/nat_decision_tree_depth_8.joblib
+  threshold: 0.5
+  feature_mapping:
+    SRC_IP: SRC_IP
+    SRC_PORT: SRC_PORT
+    DST_PORT: DST_PORT
+    TCP_SYN_SIZE: TCP_SYN_SIZE
+    TCP_WIN: TCP_WIN
+    IP_TTL: IP_TTL
+    BYTES: BYTES
+    BYTES_REV: BYTES_REV
+    PACKETS: PACKETS
+    PACKETS_REV: PACKETS_REV
 
 hand_annotator:
   ...
@@ -102,6 +120,9 @@ hand_annotator:
 - **`module`**
   - `enabled`: `True` / `False`  
   - `path`: `/.../module.py` or `auto`
+
+For `nat_detector`, `feature_mapping` maps the canonical raw fields stored in
+the model to columns in the input dataset.
 
 
 ## How It Works
@@ -174,7 +195,7 @@ Currently implemented:
 - `mac_annotator`
 - `hostname_annotator`
 - `hand_annotator`
-- `nat_detector` (simple temporary implementation)
+- `nat_detector`
 
 ### Adding a New Module
 
