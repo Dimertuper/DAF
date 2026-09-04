@@ -35,7 +35,12 @@ def count_annotator_hits(ip: IP, count: dict) -> dict:
     return count
 
 
-def print_annotation_stats(ip_addresses: list, config: dict, df: pd.DataFrame = None) -> None:
+def print_annotation_stats(
+    ip_addresses: list,
+    config: dict,
+    df: pd.DataFrame = None,
+    flow_stats: tuple[int, int] | None = None,
+) -> None:
     """
     The function `print_annotation_stats` logs a summary of the annotation process.
 
@@ -118,11 +123,14 @@ def print_annotation_stats(ip_addresses: list, config: dict, df: pd.DataFrame = 
             "os_version",
         ]
         rows_annotated = df[fields].notna().any(axis=1).sum()
+        flow_stats = (len(df.index), rows_annotated)
 
+    if flow_stats is not None:
+        flow_count, rows_annotated = flow_stats
         logger.info("Dataset annotation summary:")
-        logger.info(f"  -- Flow count: {len(df.index)}")
+        logger.info(f"  -- Flow count: {flow_count}")
         logger.info(f"  -- Successfully annotated: {rows_annotated}")
-        logger.info(f"  -- Without annotation: {len(df.index) - rows_annotated}")
+        logger.info(f"  -- Without annotation: {flow_count - rows_annotated}")
 
     # Miss summary
     logger.info("Annotation fails:")

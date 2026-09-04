@@ -15,21 +15,20 @@ daf:
   data_export: True
 
 nat_detector:
-  enabled: True
+  enabled: False
   path: auto
-  field: "TTL"
 
 hand_annotator:
   enabled: True
   path: auto
-  db: "../examples/hand_annotator_rules_example.csv"
+  db: "../examples/basic/hand_annotator_rules_example.csv"
 
 hostname_annotator:
   enabled: False   # Change to True to enable
   path: auto
-  full_db: "../examples/hostname_annotator_full_match_example.csv"
-  sequences_db: "../examples/hostname_annotator_sequences_example.csv"
-  subsequences_db: "../examples/hostname_annotator_subsequences_example.csv"
+  full_db: "../examples/basic/hostname_annotator_full_match_example.csv"
+  sequences_db: "../examples/basic/hostname_annotator_sequences_example.csv"
+  subsequences_db: "../examples/basic/hostname_annotator_subsequences_example.csv"
 
 mac_annotator:
   enabled: True
@@ -63,4 +62,3 @@ useragent_annotator:
   others_db: "PATH"   # Path to other useragents database
   full_search: True
   mine_flag: True
-

@@ -25,10 +25,6 @@ daf = "daf:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
 py-modules = [
   "daf",
   "ip",
@@ -36,8 +32,12 @@ py-modules = [
   "load",
   "output",
   "stats",
-  "annotation"
+  "annotation",
+  "windows"
 ]
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.black]
 line-length = 100

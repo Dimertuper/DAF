@@ -16,7 +16,40 @@ from pathlib import Path
 
 import yaml
 
+from windows import parse_duration
+
 logger = logging.getLogger("Load")
+
+
+def validate_windowing_config(config: dict) -> None:
+    """Validate the optional ``daf.windowing`` configuration."""
+
+    windowing = config["daf"].get("windowing")
+    if windowing is None:
+        return
+    if not isinstance(windowing, dict):
+        raise ValueError("DAF:: daf.windowing must be a mapping")
+    if not isinstance(windowing.get("enabled"), bool):
+        raise ValueError("DAF:: daf.windowing.enabled must be true or false")
+    if not windowing["enabled"]:
+        return
+
+    window_type = windowing.get("type")
+    if window_type not in {"rows", "time"}:
+        raise ValueError("DAF:: daf.windowing.type must be 'rows' or 'time'")
+    if windowing.get("consensus") != "majority":
+        raise ValueError("DAF:: not supported daf.windowing.consensus, supported are: 'majority'")
+
+    size = windowing.get("size")
+    if window_type == "rows":
+        if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+            raise ValueError("DAF:: row window size must be a positive integer")
+        return
+
+    timestamp_field = windowing.get("timestamp_field")
+    if not isinstance(timestamp_field, str) or not timestamp_field:
+        raise ValueError("DAF:: time windowing requires timestamp_field")
+    parse_duration(size)
 
 
 def load_config(arg: Namespace) -> dict:
@@ -57,6 +90,7 @@ def load_config(arg: Namespace) -> dict:
         )
 
     config["daf"]["progress_print"] = arg.logfile is True
+    validate_windowing_config(config)
 
     return config
 

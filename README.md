@@ -18,7 +18,9 @@ DAF performs both **initial annotation** and **reannotation** using saved JSON s
 
 ## Installation
 
-```
+Install with `pip`:
+
+```sh
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -41,10 +43,11 @@ For real annotation tasks, make sure to provide your own annotator databases and
 Example usage:
 
 ```
-./daf.py --config ../examples/daf_config_example.yml --dataset ../examples/example_dataset_large.csv --logfile ../examples/daf_example.log
+./daf.py --config ../examples/basic/daf_config_example.yml --dataset ../examples/basic/example_dataset.csv --logfile ../examples/basic/daf_example.log
 ```
 
-Output files will be saved to the ../examples directory.
+Output files will be saved next to the selected dataset. A timestamped example
+using 15-minute windows is available under `examples/windowing`.
 
 ## Outputs
 
@@ -94,6 +97,7 @@ hand_annotator:
   - `threads`: Use multi-threading for annotation  
   - `export_full_annotation`: Include all fields in output dataset  
   - `data_export`: Export IP-level data as JSON  
+  - `windowing`: Optionally run the unchanged DAF pipeline over time windows
 
 - **`module`**
   - `enabled`: `True` / `False`  
@@ -107,6 +111,31 @@ hand_annotator:
 3. **Merging**: Annotations are merged using a voting mechanism (`min_annotation_count`, `min_annotators_count`).
 4. **Finalization**: Results are stored per IP and optionally exported.
 5. **Reannotation**: Optionally loads a saved annotation file and only annotates new/unseen IPs.
+
+### Windowed processing
+
+DAF can run its existing module pipeline once per time or row window and combine
+the completed IP results using majority voting:
+
+```yaml
+daf:
+  windowing:
+    enabled: true
+    type: time
+    size: 15min
+    timestamp_field: TIME_FIRST
+    consensus: majority
+```
+
+For fixed row windows, use `type: rows` and a positive integer `size`. Time-windowed
+CSV input must be sorted by `timestamp_field`; window bounds are `[start, end)`.
+Missing annotation values abstain from majority voting.
+
+When `data_export` is enabled, `_ip_data.json` includes the final consensus and
+the compact result from each window. Time-windowed reannotation appends only
+previously unseen IP and bucket combinations before recalculating consensus.
+Row-window reannotation is not supported because row positions are not stable.
+
 
 ## Annotation Taxonomy
 

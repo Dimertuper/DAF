@@ -15,6 +15,7 @@ import logging
 import time
 import traceback
 from argparse import RawTextHelpFormatter
+from copy import deepcopy
 from datetime import timedelta
 from functools import partial
 from pathlib import Path
@@ -28,9 +29,15 @@ from annotation import Annotation
 # Local Imports
 from ip import IP, export_ip_data, load_ip_data
 from ip_ranges import select_protected_ips
-from load import load_config, load_modules
-from output import annotate_dataset, export_ip_annotation_list
+from load import load_config, load_modules, validate_windowing_config
+from output import annotate_dataset, annotate_dataset_in_chunks, export_ip_annotation_list
 from stats import print_annotation_stats
+from windows import (
+    WindowResult,
+    extend_time_window_results,
+    iter_flow_windows,
+    resolve_window_results,
+)
 
 logger = logging.getLogger("DAF")
 
@@ -131,23 +138,8 @@ def parse_arguments() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def process_in_memory(arg: argparse.Namespace, config: dict, annotators: list) -> None:
-    """
-    Annotates IP addresses in a dataset using multiple annotator modules, processing the data in memory.
-
-    Loads the dataset into memory, extracts IP addresses for annotation, and applies each annotator module
-    either in parallel threads or sequentially, depending on configuration. Handles errors from annotators,
-    finalizes annotation, exports results, and prints annotation statistics.
-
-    Parameters
-    ----------
-    arg : argparse.Namespace
-        Command-line arguments.
-    config : dict
-        Configuration dictionary.
-    annotators : list
-        List of annotator modules.
-    """
+def process_flows(flows: pd.DataFrame, config: dict, annotators: list) -> list[IP]:
+    """Run the existing DAF annotators against one flow DataFrame."""
 
     def start_thread(module, ip_addresses, config, flows_ip_dict):
         """Start annotator in a separate thread.
@@ -160,7 +152,7 @@ def process_in_memory(arg: argparse.Namespace, config: dict, annotators: list) -
         ip_addresses : list
             The list of IP addresses to be annotated.
         config : dict
-            The configuration dictionary.
+            Configuration dictionary.
         flows_ip_dict : dict
             A dictionary mapping IP addresses to their corresponding network flows.
         """
@@ -172,11 +164,6 @@ def process_in_memory(arg: argparse.Namespace, config: dict, annotators: list) -
             thread_errors.append([module.__name__, traceback.format_exc()])
 
     thread_errors = []
-
-    logger.info("Process annotation in memory:")
-
-    logger.info("  -- loading complete dataset to memory ... ")
-    flows = pd.read_csv(arg.dataset, delimiter=arg.d, low_memory=False)
 
     logger.info("  -- getting IP addresses for annotation from dataset ... ")
     ip_addresses = select_protected_ips(config, flows)
@@ -221,6 +208,16 @@ def process_in_memory(arg: argparse.Namespace, config: dict, annotators: list) -
     for ip in ip_addresses:
         ip.perform_annotation(config["daf"]["min_annotators_count"])
     logger.info("  -- finalize annotation of IPs ... DONE")
+    return ip_addresses
+
+
+def process_dataset(arg: argparse.Namespace, config: dict, annotators: list) -> None:
+    """Annotate the complete dataset in one DAF pass."""
+
+    logger.info("Process annotation in memory:")
+    logger.info("  -- loading complete dataset to memory ... ")
+    flows = pd.read_csv(arg.dataset, delimiter=arg.d, low_memory=False)
+    ip_addresses = process_flows(flows, config, annotators)
 
     # Export annotation
     export_ip_annotation_list(ip_addresses, arg, config)
@@ -232,6 +229,127 @@ def process_in_memory(arg: argparse.Namespace, config: dict, annotators: list) -
 
     # Print annotation stats
     print_annotation_stats(ip_addresses, config, flows)
+
+
+def process_windows(arg: argparse.Namespace, config: dict, annotators: list) -> None:
+    """Run the normal DAF pipeline once per configured window."""
+
+    validate_windowing_config(config)
+    logger.info("Process annotation in windows:")
+    windowing = config["daf"]["windowing"]
+    results = []
+    for flow_window in iter_flow_windows(
+        arg.dataset,
+        delimiter=arg.d,
+        config=windowing,
+    ):
+        logger.info(f"  -- processing window {flow_window.metadata.index} ...")
+        ip_addresses = process_flows(flow_window.flows, config, annotators)
+        results.append(WindowResult.from_ips(flow_window.metadata, ip_addresses))
+
+    ip_addresses = resolve_window_results(results)
+    export_ip_annotation_list(ip_addresses, arg, config)
+    chunk_size = windowing["size"] if windowing["type"] == "rows" else 100_000
+    flow_stats = annotate_dataset_in_chunks(
+        arg.dataset,
+        ip_addresses,
+        arg,
+        config,
+        chunk_size=chunk_size,
+    )
+    if config["daf"]["data_export"]:
+        export_ip_data(ip_addresses, arg)
+    print_annotation_stats(ip_addresses, config, flow_stats=flow_stats)
+
+
+def process_reannotation_in_windows(
+    arg: argparse.Namespace,
+    config: dict,
+    annotators: list,
+) -> None:
+    """Append unseen timestamped observations and recalculate window results."""
+
+    validate_windowing_config(config)
+    windowing = config["daf"]["windowing"]
+    if windowing["type"] != "time":
+        raise ValueError("DAF:: windowed reannotation requires time windows")
+    if arg.dataset is None:
+        raise ValueError("DAF:: windowed reannotation requires a dataset")
+
+    logger.info("Process reannotation in windows:")
+    previous_ips = load_ip_data(arg.reannotation)
+    if any(not ip.window_results for ip in previous_ips):
+        raise ValueError(
+            "DAF:: windowed reannotation requires data produced by time windowing"
+        )
+
+    saved_results, _ = extend_time_window_results(
+        previous_ips,
+        [],
+        window_size=windowing["size"],
+    )
+    saved_observations = {
+        (observation.ip_address, result.metadata.start)
+        for result in saved_results
+        for observation in result.observations
+    }
+
+    new_results = []
+    for flow_window in iter_flow_windows(
+        arg.dataset,
+        delimiter=arg.d,
+        config=windowing,
+    ):
+        ip_fields = [config["daf"]["src_ip_field"]]
+        if config["daf"]["dst_ip_field"] is not None:
+            ip_fields.append(config["daf"]["dst_ip_field"])
+        unseen_rows = pd.Series(False, index=flow_window.flows.index)
+        for field in ip_fields:
+            unseen_rows |= pd.Series(
+                [
+                    (str(ip_address), flow_window.metadata.start)
+                    not in saved_observations
+                    for ip_address in flow_window.flows[field]
+                ],
+                index=flow_window.flows.index,
+            )
+        if not unseen_rows.any():
+            continue
+
+        logger.info(f"  -- processing window {flow_window.metadata.index} ...")
+        ip_addresses = process_flows(
+            flow_window.flows[unseen_rows].copy(), config, annotators
+        )
+        new_results.append(WindowResult.from_ips(flow_window.metadata, ip_addresses))
+
+    merged_results, appended_ips = extend_time_window_results(
+        previous_ips,
+        new_results,
+        window_size=windowing["size"],
+    )
+    if appended_ips:
+        ip_addresses = resolve_window_results(merged_results)
+        previous_by_ip = {str(ip.ip_addr): ip for ip in previous_ips}
+        for ip in ip_addresses:
+            previous = previous_by_ip.get(str(ip.ip_addr))
+            if previous is None:
+                continue
+            ip.data = {**deepcopy(previous.data), **ip.data}
+            ip.hand_miss = deepcopy(previous.hand_miss) + ip.hand_miss
+            ip.one_miss = deepcopy(previous.one_miss) + ip.one_miss
+    else:
+        ip_addresses = previous_ips
+
+    export_ip_annotation_list(ip_addresses, arg, config)
+    flow_stats = annotate_dataset_in_chunks(
+        arg.dataset,
+        ip_addresses,
+        arg,
+        config,
+    )
+    if config["daf"]["data_export"]:
+        export_ip_data(ip_addresses, arg)
+    print_annotation_stats(ip_addresses, config, flow_stats=flow_stats)
 
 
 def process_reannotation(arg: argparse.Namespace, config: dict, annotators: list) -> None:
@@ -373,6 +491,7 @@ def main() -> None:
     # Load configuration
     logger.info(f"Loading configuration from {arg.config} ... ")
     config = load_config(arg)
+    windowing_enabled = config["daf"].get("windowing", {}).get("enabled", False)
 
     # Log the configuration and info about the dataset and reannotation file
     if arg.dataset is not None:
@@ -399,7 +518,12 @@ def main() -> None:
     # Start annotation
     start = time.time()
     if arg.reannotation is None:
-        process_in_memory(arg, config, annotators)
+        if windowing_enabled:
+            process_windows(arg, config, annotators)
+        else:
+            process_dataset(arg, config, annotators)
+    elif windowing_enabled:
+        process_reannotation_in_windows(arg, config, annotators)
     else:
         process_reannotation(arg, config, annotators)
     elapsed = time.time() - start

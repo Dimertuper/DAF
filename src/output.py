@@ -17,6 +17,31 @@ import pandas as pd
 
 logger = logging.getLogger("Output")
 
+ANNOTATION_FIELDS = ("group", "_class", "os_family", "os_type", "os_version")
+
+
+def _create_annotation_table(ip_addresses: list) -> pd.DataFrame:
+    """Create an IP-indexed table of final annotations."""
+
+    return pd.DataFrame(
+        [ip.final_annotation.ret_annotation() for ip in ip_addresses],
+        index=pd.Index([str(ip.ip_addr) for ip in ip_addresses], name="ip_address"),
+        columns=ANNOTATION_FIELDS,
+    )
+
+
+def _annotate_flows(
+    flows: pd.DataFrame,
+    annotation_table: pd.DataFrame,
+    src_ip_field: str,
+) -> pd.DataFrame:
+    """Attach final annotations to flows by source IP."""
+
+    annotations = annotation_table.reindex(flows[src_ip_field].astype(str))
+    annotations.index = flows.index
+    flows[list(ANNOTATION_FIELDS)] = annotations
+    return flows
+
 
 def export_ip_annotation_list(ip_addresses: list, arg: argparse.Namespace, config: dict) -> None:
     """Export IP annotation list to a CSV file.
@@ -75,10 +100,7 @@ def export_ip_annotation_list(ip_addresses: list, arg: argparse.Namespace, confi
         writer.writerow(header)
 
         for ip in ip_addresses:
-            nat = False
-            if len(ip.multi_device) > 0:
-                nat = True
-            row = [str(ip.ip_addr)] + [nat] + ip.final_annotation.ret_annotation()
+            row = [str(ip.ip_addr), bool(ip.multi_device)] + ip.final_annotation.ret_annotation()
             if config["daf"]["export_full_annotation"]:
                 for annotator in tmp:
                     if annotator == "final_annotation":
@@ -99,36 +121,8 @@ def annotate_dataset(
 
     logger.info("  -- Annotating dataset and saving to file...")
 
-    annotation_map = {}
-
-    # Fill the dictionary with IPs and their annotations
-    for ip in ip_addresses:
-        (
-            group,
-            _class,
-            os_family,
-            os_type,
-            os_version,
-        ) = ip.final_annotation.ret_annotation()
-        annotation_map[str(ip.ip_addr)] = {
-            "group": group,
-            "_class": _class,
-            "os_family": os_family,
-            "os_type": os_type,
-            "os_version": os_version,
-        }
-
-    # Vectorized annotation using the mapping
-    src_ip_field = config["daf"]["src_ip_field"]
-    flows["group"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("group"))
-    flows["_class"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("_class"))
-    flows["os_family"] = flows[src_ip_field].map(
-        lambda ip: annotation_map.get(ip, {}).get("os_family")
-    )
-    flows["os_type"] = flows[src_ip_field].map(lambda ip: annotation_map.get(ip, {}).get("os_type"))
-    flows["os_version"] = flows[src_ip_field].map(
-        lambda ip: annotation_map.get(ip, {}).get("os_version")
-    )
+    annotation_table = _create_annotation_table(ip_addresses)
+    flows = _annotate_flows(flows, annotation_table, config["daf"]["src_ip_field"])
 
     # Export dataset to CSV
     output_file = f"{arg.dataset.split('.csv')[0]}_annotated.csv"
@@ -137,3 +131,46 @@ def annotate_dataset(
     logger.info(f"Annotated dataset saved to {output_file}")
 
     return flows
+
+
+def annotate_dataset_in_chunks(
+    dataset: str,
+    ip_addresses: list,
+    arg: argparse.Namespace,
+    config: dict,
+    *,
+    chunk_size: int = 100_000,
+) -> tuple[int, int]:
+    """Write the final annotated CSV without loading the complete input."""
+
+    logger.info("  -- Annotating dataset and saving to file...")
+    output_file = f"{dataset.split('.csv')[0]}_annotated.csv"
+    flow_count = 0
+    annotated_count = 0
+    first_chunk = True
+    annotation_table = _create_annotation_table(ip_addresses)
+    src_ip_field = config["daf"]["src_ip_field"]
+
+    for flows in pd.read_csv(
+        dataset,
+        delimiter=arg.d,
+        low_memory=False,
+        chunksize=chunk_size,
+    ):
+        flows = _annotate_flows(flows, annotation_table, src_ip_field)
+        flow_count += len(flows)
+        annotated_count += int(flows[list(ANNOTATION_FIELDS)].notna().any(axis=1).sum())
+        flows.to_csv(
+            output_file,
+            index=False,
+            mode="w" if first_chunk else "a",
+            header=first_chunk,
+        )
+        first_chunk = False
+
+    if first_chunk:
+        flows = pd.read_csv(dataset, delimiter=arg.d, low_memory=False)
+        _annotate_flows(flows, annotation_table, src_ip_field).to_csv(output_file, index=False)
+
+    logger.info(f"Annotated dataset saved to {output_file}")
+    return flow_count, annotated_count

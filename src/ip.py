@@ -42,6 +42,8 @@ class IP:
         A dictionary containing annotations added to the IP.
     data : dict
         A dictionary containing data added to the IP.
+    window_results : list
+        Compact per-window results used by majority voting.
     hand_miss : list
         A list of cases where hand annotator tag is different from the final annotation.
     one_miss : list
@@ -70,6 +72,7 @@ class IP:
         self.final_annotation = Annotation()
         self.annotations = {}
         self.data = {}
+        self.window_results = []
 
         self.hand_miss = []
         self.one_miss = []
@@ -120,6 +123,7 @@ class IP:
 
         self.annotations.update(other.annotations)
         self.data.update(other.data)
+        self.window_results.extend(other.window_results)
 
         self.hand_miss.extend(other.hand_miss)
         self.one_miss.extend(other.one_miss)
@@ -281,7 +285,7 @@ class IP:
             The IP object as a dictionary, suitable for JSON serialization.
         """
 
-        return {
+        result = {
             "ip_addr": str(self.ip_addr),
             "final_annotation": self.final_annotation.export(),
             "annotations": {key: value.export() for key, value in self.annotations.items()},
@@ -290,9 +294,12 @@ class IP:
             "one_miss": self.one_miss,
             "multi_device": self.multi_device,
         }
+        if self.window_results:
+            result["window_results"] = self.window_results
+        return result
 
     @classmethod
-    def load(cls, data: dict) -> TIP:
+    def load(cls: type[TIP], data: dict) -> TIP:
         """Load the IP object from a dictionary.
 
         Parameters
@@ -313,10 +320,11 @@ class IP:
         loaded_ip.annotations = {
             name: Annotation.load(anno) for name, anno in data.get("annotations", {}).items()
         }
+        loaded_ip.window_results = data.get("window_results", [])
         loaded_ip.data = data.get("data", {})
         loaded_ip.hand_miss = data.get("hand_miss", [])
         loaded_ip.one_miss = data.get("one_miss", [])
-        loaded_ip.multi_device = data.get("multi_device", {})
+        loaded_ip.multi_device = data.get("multi_device", [])
 
         return loaded_ip
 
