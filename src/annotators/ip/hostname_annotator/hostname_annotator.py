@@ -19,7 +19,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 
 from config import Requirement
-from core import DAFModule
+from core import IPAnnotator
 from ip import Annotation
 
 logger = logging.getLogger("Hostname Annotator")
@@ -186,7 +186,7 @@ class ReverseDNS:
             return None
 
 
-class HostnameAnnotator(DAFModule):
+class HostnameAnnotator(IPAnnotator):
     """Annotate IP addresses by rules matched against their reverse DNS hostname.
 
     Attributes
@@ -216,15 +216,13 @@ class HostnameAnnotator(DAFModule):
         )
         self.resolver = ReverseDNS(self.config["timeout"])
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip) -> None:
         """Resolve the hostname of one IP address and annotate it.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
-            Not used.
         """
 
         hostname = self.resolver.resolve(str(ip.ip_addr))

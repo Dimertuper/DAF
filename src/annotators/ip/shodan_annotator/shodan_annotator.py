@@ -17,7 +17,7 @@ from pathlib import Path
 import requests
 
 from config import Requirement
-from core import DAFModule
+from core import IPAnnotator
 from ip import Annotation
 
 logger = logging.getLogger("Shodan Annotator")
@@ -265,7 +265,7 @@ class ShodanClient:
         return group, _class, os_family, os_type, os_version
 
 
-class ShodanAnnotator(DAFModule):
+class ShodanAnnotator(IPAnnotator):
     """Annotate IP addresses with OS and open port information from Shodan.
 
     Attributes
@@ -290,15 +290,13 @@ class ShodanAnnotator(DAFModule):
 
         self.client = ShodanClient(self.config)
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip) -> None:
         """Query Shodan for one IP address and annotate it.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
-            Not used.
         """
 
         shodan_os, shodan_open_ports, annotations = self.client.query(ip.ip_addr)

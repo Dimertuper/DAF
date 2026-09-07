@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 
 from config import Requirement
-from core import DAFModule
+from core import FlowAnnotator
 from ip import Annotation
 
 logger = logging.getLogger("SNI Annotator")
@@ -133,7 +133,7 @@ class SNIDatabase:
         return [os_family, os_type, group, _class]
 
 
-class SNIAnnotator(DAFModule):
+class SNIAnnotator(FlowAnnotator):
     """Annotate IP addresses by server names (TLS/QUIC SNI, HTTP host, DNS) in their flows.
 
     Every configured field produces its own annotation named ``sni_annotator_<field>``.
@@ -305,32 +305,31 @@ class SNIAnnotator(DAFModule):
         self.sni_db = SNIDatabase(self.config["db_file"])
         self.fields = []
 
-    def before_run(self, ip_addresses: list, flows_by_ip: dict) -> None:
+    def validate_flows(self, flows: pd.DataFrame) -> None:
         """Select the configured fields present in the flows.
+
+        Missing fields are skipped, a missing URI field is replaced by None.
 
         Parameters
         ----------
-        ip_addresses : list
-            IP objects that will be annotated.
-        flows_by_ip : dict
-            Flow DataFrames keyed by source IP address string.
+        flows : pd.DataFrame
+            Flows of one IP address, used as a sample of the dataset schema.
         """
 
         if len(self.config["fields"]) == 0:
             logger.error("No fields in configuration file, nothing to annotate")
             self.fields = []
             return
-        _, first_value = next(iter(flows_by_ip.items()))
-        self.fields = self.fields_from_config(self.config, first_value)
+        self.fields = self.fields_from_config(self.config, flows)
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip, flows) -> None:
         """Annotate one IP address by the server names found in each configured field.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
+        flows : pd.DataFrame
             Flows of the IP.
         """
 

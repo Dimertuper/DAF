@@ -17,7 +17,7 @@ from typing import Optional
 import pandas as pd
 
 from config import Requirement
-from core import DAFModule
+from core import FlowAnnotator
 from ip import Annotation
 
 logger = logging.getLogger("MAC Annotator")
@@ -115,10 +115,12 @@ class OUIDatabase:
         return [group, _class, family]
 
 
-class MACAnnotator(DAFModule):
+class MACAnnotator(FlowAnnotator):
     """Annotate IP addresses by the vendor (OUI) of the MAC addresses in their flows.
 
     If an IP uses more than one MAC address, it is flagged as a possible multi-device.
+    If ``daf.dst_ip_field`` is set, MAC addresses of flows destined to the IP are used
+    too, so IPs without source flows are annotated as well.
 
     Attributes
     ----------
@@ -134,6 +136,23 @@ class MACAnnotator(DAFModule):
         Requirement("dst_mac_field", str, required=False),
     )
     DAF_REQUIREMENTS = (Requirement("dst_ip_field", str, default=None),)
+
+    @property
+    def requires_src_flows(self) -> bool:
+        """Annotate IPs without source flows if destination flows are used."""
+
+        return self.daf_config["dst_ip_field"] is None
+
+    def required_columns(self) -> tuple:
+        """Return the source MAC column.
+
+        Returns
+        -------
+        tuple
+            Name of the source MAC column.
+        """
+
+        return (self.config["src_mac_field"],)
 
     @staticmethod
     def collect_macs(ip, flows_by_ip: Optional[dict], field: str) -> Optional[list]:
@@ -179,40 +198,31 @@ class MACAnnotator(DAFModule):
             IP objects that will be annotated.
         flows_by_ip : dict
             Flow DataFrames keyed by source IP address string.
-
-        Raises
-        ------
-        ValueError
-            If the source MAC column is missing.
         """
 
-        self._flows_by_ip = flows_by_ip
-        _, first_value = next(iter(flows_by_ip.items()))
-        if self.config["src_mac_field"] not in first_value.columns:
-            logger.error(f"Column {self.config['src_mac_field']} not found in the dataframe")
-            raise ValueError(
-                f"MAC Annotator:: Column {self.config['src_mac_field']} not found in the dataframe"
-            )
-
+        super().before_run(ip_addresses, flows_by_ip)
         self._dst_grouped_dfs = None
-        if self.daf_config["dst_ip_field"] is not None:
+        if self.daf_config["dst_ip_field"] is not None and flows_by_ip:
             self._dst_grouped_dfs = {
                 k: v
                 for k, v in pd.concat(flows_by_ip.values()).groupby(self.daf_config["dst_ip_field"])
             }
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip, flows) -> None:
         """Annotate one IP address by its MAC address.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
-            Flows of the IP.
+        flows : pd.DataFrame or None
+            Source flows of the IP.
         """
 
-        macs = self.collect_macs(str(ip.ip_addr), self._flows_by_ip, self.config["src_mac_field"])
+        key = str(ip.ip_addr)
+        macs = self.collect_macs(
+            key, {key: flows} if flows is not None else None, self.config["src_mac_field"]
+        )
         if self._dst_grouped_dfs is not None:
             if "dst_mac_field" not in self.config:
                 logger.warning(
@@ -220,7 +230,7 @@ class MACAnnotator(DAFModule):
                 )
             dst_macs = self.collect_macs(str(ip.ip_addr), self._dst_grouped_dfs, self.config["dst_mac_field"])
             if dst_macs is not None:
-                macs += dst_macs
+                macs = (macs or []) + dst_macs
 
         if macs is not None:
             if len(macs) > 1:

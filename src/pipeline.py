@@ -13,6 +13,7 @@ import argparse
 import logging
 import traceback
 from threading import Thread
+from typing import Optional
 
 from config import Configurable, Requirement
 from dataset import FlowDataset
@@ -49,8 +50,27 @@ class ModuleRunner:
         self.modules = modules
         self.threads = threads
 
-    def run(self, ip_addresses: list, flows_by_ip: dict) -> None:
-        """Run all modules on the given IP addresses.
+    def modules_of_kind(self, kind: str) -> list:
+        """Return modules of one kind.
+
+        Parameters
+        ----------
+        kind : str
+            ``"ip"`` for IP-based or ``"flow"`` for flow-based modules.
+
+        Returns
+        -------
+        list
+            Matching modules.
+        """
+
+        return [module for module in self.modules if module.kind == kind]
+
+    def run(self, ip_addresses: list, flows_by_ip: dict, kind: Optional[str] = None) -> None:
+        """Run modules on the given IP addresses.
+
+        IP-based modules annotate every IP address. Flow-based modules annotate IP
+        addresses present in ``flows_by_ip``, see :meth:`core.FlowAnnotator.select_targets`.
 
         Parameters
         ----------
@@ -58,6 +78,8 @@ class ModuleRunner:
             IP objects to annotate.
         flows_by_ip : dict
             Flow DataFrames keyed by source IP address string.
+        kind : str, optional
+            Run only modules of this kind (``"ip"`` or ``"flow"``). All modules by default.
 
         Raises
         ------
@@ -76,9 +98,13 @@ class ModuleRunner:
             except Exception:  # pylint: disable=broad-except
                 errors.append([module.name, traceback.format_exc()])
 
+        modules = self.modules if kind is None else self.modules_of_kind(kind)
+        if not modules:
+            return
+
         logger.info("  -- Starting annotators:")
         threads = []
-        for module in self.modules:
+        for module in modules:
             if self.threads:
                 logger.info(f"    -- {module.name} started ... ")
                 thread = Thread(target=start, args=(module,))

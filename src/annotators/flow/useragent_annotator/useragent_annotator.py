@@ -14,7 +14,7 @@ from collections import Counter
 
 from annotation import Annotation
 from config import Requirement
-from core import DAFModule
+from core import FlowAnnotator
 
 from . import translate_useragent as translate
 
@@ -494,7 +494,7 @@ class UserAgentDatabase:
         self.others = translate.load_useragent_table(others_db)
 
 
-class UserAgentAnnotator(DAFModule):
+class UserAgentAnnotator(FlowAnnotator):
     """Annotate IP addresses by the HTTP User-Agent strings in their flows.
 
     Attributes
@@ -522,35 +522,25 @@ class UserAgentAnnotator(DAFModule):
             self.config["keywords_db"], self.config["browsers_db"], self.config["others_db"]
         )
 
-    def before_run(self, ip_addresses: list, flows_by_ip: dict) -> None:
-        """Check that the useragent column is present in the flows.
+    def required_columns(self) -> tuple:
+        """Return the useragent column.
 
-        Parameters
-        ----------
-        ip_addresses : list
-            IP objects that will be annotated.
-        flows_by_ip : dict
-            Flow DataFrames keyed by source IP address string.
-
-        Raises
-        ------
-        ValueError
-            If the useragent column is missing.
+        Returns
+        -------
+        tuple
+            Name of the useragent column.
         """
 
-        _, first_value = next(iter(flows_by_ip.items()))
-        if self.config["field"] not in first_value.columns:
-            logger.error("Column {} not found in the dataframe".format(self.config["field"]))
-            raise ValueError("Column {} not found in the dataframe".format(self.config["field"]))
+        return (self.config["field"],)
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip, flows) -> None:
         """Translate the useragents of one IP address and annotate it.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
+        flows : pd.DataFrame
             Flows of the IP.
         """
 

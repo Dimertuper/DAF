@@ -27,7 +27,8 @@ class ModuleLoader(Configurable):
     """Find, import and initialize the modules enabled in the configuration.
 
     Module files named ``*annotator.py`` or ``*detector.py`` are searched for in the
-    subdirectories of ``daf.annotators_path`` and ``daf.detectors_path``. Modules whose
+    module folders of ``daf.annotators_path`` (grouped by kind in ``ip/`` and ``flow/``)
+    and ``daf.detectors_path``. Modules whose
     ``path`` is not ``auto`` are loaded from the configured path. Every module file must
     define a :class:`core.DAFModule` subclass whose ``name`` matches its section.
 
@@ -71,8 +72,8 @@ class ModuleLoader(Configurable):
         """Import a module file and register it in ``sys.modules``.
 
         The module name is derived from the path relative to the working directory, e.g.
-        ``./annotators/sni_annotator/sni_annotator.py`` is imported as
-        ``annotators.sni_annotator.sni_annotator``. Registering the module allows relative
+        ``./annotators/flow/sni_annotator/sni_annotator.py`` is imported as
+        ``annotators.flow.sni_annotator.sni_annotator``. Registering the module allows relative
         imports inside module packages and unpickling of objects defined in the module.
 
         Parameters
@@ -153,7 +154,40 @@ class ModuleLoader(Configurable):
         if module_class is None:
             logger.error(f"DAF:: Module file {path} does not define module {name}")
             raise ValueError(f"DAF:: Module file {path} does not define module {name}")
+        kind_folder = path.parent.parent.name
+        if kind_folder in ("ip", "flow") and module_class.kind != kind_folder:
+            logger.warning(
+                f"DAF:: Module {name} is a {module_class.kind}-based module placed in the "
+                f"'{kind_folder}' folder"
+            )
         return module_class(self.config)
+
+    @staticmethod
+    def module_files(directory: Path) -> List[Path]:
+        """Find module files in the module folders of a directory.
+
+        Every module has its own folder, which may be grouped in folders by kind, e.g.
+        ``annotators/ip/hand_annotator/hand_annotator.py`` or
+        ``annotators/flow/sni_annotator/sni_annotator.py``.
+
+        Parameters
+        ----------
+        directory : pathlib.Path
+            ``annotators_path`` or ``detectors_path``.
+
+        Returns
+        -------
+        list
+            Paths of files named ``*annotator.py`` or ``*detector.py``.
+        """
+
+        return [
+            file
+            for file in sorted(directory.rglob("*.py"))
+            if file.parent != directory
+            and "__pycache__" not in file.parts
+            and (file.name.endswith("annotator.py") or file.name.endswith("detector.py"))
+        ]
 
     def discover(self) -> List[Tuple[str, Path]]:
         """Find the files of the enabled modules.
@@ -167,21 +201,16 @@ class ModuleLoader(Configurable):
         found = []
         discovered = set()
         for directory in (self.config["daf"]["annotators_path"], self.config["daf"]["detectors_path"]):
-            for folder in sorted(Path(directory).iterdir()):
-                if not folder.is_dir():
+            for file in self.module_files(Path(directory)):
+                name = file.name.split(".")[0]
+                if name not in self.config:
+                    logger.warning(
+                        f"DAF:: Found annotator={name}, but configuration is missing in config file, skipping."
+                    )
                     continue
-                for file in sorted(folder.iterdir()):
-                    if not (file.name.endswith("annotator.py") or file.name.endswith("detector.py")):
-                        continue
-                    name = file.name.split(".")[0]
-                    if name not in self.config:
-                        logger.warning(
-                            f"DAF:: Found annotator={name}, but configuration is missing in config file, skipping."
-                        )
-                        continue
-                    discovered.add(name)
-                    if self.config[name]["enabled"] is True:
-                        found.append((name, file))
+                discovered.add(name)
+                if self.config[name]["enabled"] is True:
+                    found.append((name, file))
 
         # Modules not found in the module directories are loaded from their path
         for name, section in self.config.items():

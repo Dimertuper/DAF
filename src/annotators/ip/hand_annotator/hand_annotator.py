@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import Requirement
-from core import DAFModule
+from core import IPAnnotator
 from ip import Annotation
 
 logger = logging.getLogger("Hand Annotator")
@@ -131,7 +131,7 @@ class HandAnnotationRules:
         return device_hand_annotation, network_hand_annotation
 
 
-class HandAnnotator(DAFModule):
+class HandAnnotator(IPAnnotator):
     """Annotate IP addresses with hand-crafted annotations from a CSV database.
 
     Hand annotations override the merged annotation of the other modules, see
@@ -152,15 +152,13 @@ class HandAnnotator(DAFModule):
 
         self.rules = HandAnnotationRules(Path(self.config["db"]))
 
-    def annotate_ip(self, ip, flows=None) -> None:
+    def annotate_ip(self, ip) -> None:
         """Annotate one IP address with the matching hand annotation rule.
 
         Parameters
         ----------
         ip : IP
             IP object to annotate.
-        flows : pd.DataFrame, optional
-            Not used.
         """
 
         labels = self.rules.lookup(ip.ip_addr)
