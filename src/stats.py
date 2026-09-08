@@ -10,6 +10,7 @@ Description: Collecting and logging of annotation statistics.
 """
 
 import logging
+from typing import Optional, Tuple
 
 import pandas as pd
 
@@ -85,7 +86,12 @@ class AnnotationStatistics:
             count[key] = count.get(key, 0) + 1
         return count
 
-    def log(self, ip_addresses: list, df: pd.DataFrame = None) -> None:
+    def log(
+        self,
+        ip_addresses: list,
+        df: pd.DataFrame = None,
+        flow_stats: Optional[Tuple[int, int]] = None,
+    ) -> None:
         """Log a summary of the annotation process.
 
         Parameters
@@ -94,6 +100,9 @@ class AnnotationStatistics:
             Annotated IP objects.
         df : pd.DataFrame, optional
             Annotated flows, used to count annotated flows.
+        flow_stats : tuple, optional
+            ``(flow_count, annotated_flow_count)`` used when the annotated flows are not
+            kept in memory, e.g. in windowed processing.
         """
 
         total_one_miss = 0
@@ -148,11 +157,14 @@ class AnnotationStatistics:
         if df is not None:
             fields = ["group", "_class", "os_family", "os_type", "os_version"]
             rows_annotated = df[fields].notna().any(axis=1).sum()
+            flow_stats = (len(df.index), rows_annotated)
 
+        if flow_stats is not None:
+            flow_count, rows_annotated = flow_stats
             logger.info("Dataset annotation summary:")
-            logger.info(f"  -- Flow count: {len(df.index)}")
+            logger.info(f"  -- Flow count: {flow_count}")
             logger.info(f"  -- Successfully annotated: {rows_annotated}")
-            logger.info(f"  -- Without annotation: {len(df.index) - rows_annotated}")
+            logger.info(f"  -- Without annotation: {flow_count - rows_annotated}")
 
         # Miss summary
         logger.info("Annotation fails:")

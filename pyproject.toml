@@ -41,7 +41,8 @@ py-modules = [
   "output",
   "pipeline",
   "stats",
-  "taxonomy_checker"
+  "taxonomy_checker",
+  "windows"
 ]
 
 [tool.black]

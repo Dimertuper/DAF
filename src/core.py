@@ -25,10 +25,10 @@ class DAFModule(Configurable, ABC):
     Modules are not derived from this class directly but from one of its two kinds:
 
     - :class:`IPAnnotator` needs only the IP address (e.g. reverse DNS, Shodan, hand
-      annotations).
+      annotations). In windowed processing it runs only once for every IP address.
     - :class:`FlowAnnotator` derives the annotation from the flows of the IP address
-      (e.g. SNI, useragent, MAC). :class:`Detector` is a flow annotator detecting
-      multi-device IPs, e.g. NAT.
+      (e.g. SNI, useragent, MAC). In windowed processing it runs in every window.
+      :class:`Detector` is a flow annotator detecting multi-device IPs, e.g. NAT.
 
     A module is configured by its own section of the DAF configuration file. The section
     name is stored in the class attribute ``name`` and is also used as the key under which
@@ -210,7 +210,7 @@ class IPAnnotator(DAFModule):
     """Base class of annotators that need only the IP address.
 
     IP annotators receive every selected IP address, including addresses without
-    source flows.
+    source flows. In windowed processing they run only once for each IP address.
     """
 
     kind = "ip"
@@ -243,7 +243,7 @@ class FlowAnnotator(DAFModule):
     """Base class of annotators deriving the annotation from flows of the IP address.
 
     Only IP addresses with source flows are annotated unless ``requires_src_flows``
-    is False.
+    is False. In windowed processing flow annotators run in every window.
 
     Attributes
     ----------

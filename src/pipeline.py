@@ -15,12 +15,16 @@ import traceback
 from threading import Thread
 from typing import Optional
 
+import pandas as pd
+
 from config import Configurable, Requirement
+from core import Detector
 from dataset import FlowDataset
 from ip import IPCollection, IPDataFile
 from ip_ranges import IPSelector
 from output import AnnotationListExporter, DatasetAnnotator, OutputPaths
 from stats import AnnotationStatistics
+from windows import FlowWindow, WindowConfig, WindowResolver, WindowResult
 
 logger = logging.getLogger("DAF")
 
@@ -304,4 +308,228 @@ class DAFRunner(Configurable):
             self.statistics.log(ip_addresses, None)
 
 
-__all__ = ["DAFRunner", "ModuleRunner", "RunnerFactory"]
+class WindowedDAFRunner(DAFRunner):
+    """Annotation process splitting the dataset into time or row windows.
+
+    Flow-based modules run in every window and their annotations are combined across
+    windows by voting, see :class:`windows.WindowResolver`. IP-based modules run only
+    once for every IP address, after all windows are processed. The final annotation is
+    then merged from both, exactly as in the processing without windows.
+
+    Once an IP is flagged as a multi-device in a window, it is not processed in any
+    later window; the flag is kept in its final result.
+
+    Attributes
+    ----------
+    window_config : WindowConfig
+        Configuration of the windows.
+    resolver : WindowResolver
+        Combination of the window results.
+    """
+
+    def __init__(self, arg: argparse.Namespace, config: dict, modules: list) -> None:
+        """Check the configuration and initialize the process.
+
+        Parameters
+        ----------
+        arg : argparse.Namespace
+            Command-line arguments.
+        config : dict
+            DAF configuration.
+        modules : list
+            Initialized annotator and detector modules.
+        """
+
+        super().__init__(arg, config, modules)
+        self.window_config = WindowConfig(config)
+        self.resolver = WindowResolver()
+
+    @property
+    def detector_names(self) -> list:
+        """Return names of the enabled detectors, whose results are kept per window."""
+
+        return [module.name for module in self.modules if isinstance(module, Detector)]
+
+    def windows(self):
+        """Return the iterator over the windows of the dataset."""
+
+        return self.window_config.windows(self.arg.dataset, self.arg.d)
+
+    def process_window(self, window: FlowWindow, flagged: dict) -> Optional[WindowResult]:
+        """Run flow-based modules on one window.
+
+        IPs in ``flagged`` are skipped and their source flows are dropped. IPs flagged
+        as multi-devices in this window are added to ``flagged``.
+
+        Parameters
+        ----------
+        window : FlowWindow
+            Window to process.
+        flagged : dict
+            Multi-device IP address strings mapped to the index of the window that
+            flagged them. Updated in place.
+
+        Returns
+        -------
+        WindowResult or None
+            Result of the window, or None if it contains no IP to annotate.
+        """
+
+        flows = window.flows
+        if flagged:
+            flows = flows[~flows[self.src_ip_field].astype(str).isin(flagged.keys())]
+
+        ip_addresses = [ip for ip in self.selector.select(flows) if str(ip.ip_addr) not in flagged]
+        if not ip_addresses:
+            return None
+
+        logger.info(
+            f"  -- processing window {window.metadata.index} "
+            f"({len(ip_addresses)} IPs, {len(flagged)} multi-device IPs skipped) ..."
+        )
+        self.module_runner.run(
+            ip_addresses, FlowDataset(flows, self.src_ip_field).flows_by_ip(), kind="flow"
+        )
+
+        for ip in ip_addresses:
+            if ip.multi_device:
+                flagged[str(ip.ip_addr)] = window.metadata.index
+                logger.info(f"    -- {ip.ip_addr} flagged as multi-device, skipped in next windows")
+
+        return WindowResult.from_ips(window.metadata, ip_addresses, self.detector_names)
+
+    def export(self, ip_addresses: list) -> None:
+        """Export the IP annotation list, the annotated dataset, IP data and statistics.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Annotated IP objects.
+        """
+
+        self.exporter.write(ip_addresses, self.paths.annotation_list)
+        chunk_size = self.window_config.size if self.window_config.type == "rows" else 100_000
+        flow_stats = DatasetAnnotator(ip_addresses, self.src_ip_field).write_chunks(
+            self.arg.dataset, self.arg.d, self.paths.annotated_dataset, chunk_size=chunk_size
+        )
+        if self.daf_config["data_export"]:
+            self.export_ip_data(ip_addresses)
+        self.statistics.log(ip_addresses, flow_stats=flow_stats)
+
+    def process_dataset(self) -> None:
+        """Annotate the dataset window by window and export the results."""
+
+        logger.info("Process annotation in windows:")
+        flagged = {}
+        results = []
+        for window in self.windows():
+            result = self.process_window(window, flagged)
+            if result is not None:
+                results.append(result)
+
+        ip_addresses = self.resolver.resolve(results)
+        logger.info("  -- running IP-based annotators once for all IPs ... ")
+        self.module_runner.run(ip_addresses, {}, kind="ip")
+        self.finalize(ip_addresses)
+        self.export(ip_addresses)
+
+    def unseen_rows(self, window: FlowWindow, saved_observations: set) -> pd.Series:
+        """Return the rows of a window whose IP and window were not saved yet.
+
+        Parameters
+        ----------
+        window : FlowWindow
+            Window of the dataset.
+        saved_observations : set
+            Saved ``(ip_address, window_start)`` pairs.
+
+        Returns
+        -------
+        pd.Series
+            Boolean mask of the unseen rows.
+        """
+
+        ip_fields = [self.src_ip_field]
+        if self.selector.dst_ip_field is not None:
+            ip_fields.append(self.selector.dst_ip_field)
+
+        unseen = pd.Series(False, index=window.flows.index)
+        for ip_field in ip_fields:
+            unseen |= pd.Series(
+                [
+                    (str(ip_address), window.metadata.start) not in saved_observations
+                    for ip_address in window.flows[ip_field]
+                ],
+                index=window.flows.index,
+            )
+        return unseen
+
+    def process_reannotation(self) -> None:
+        """Append unseen timestamped observations and recalculate window results.
+
+        Only flows of IP and window combinations missing in the saved state are
+        processed. IPs flagged as multi-devices in the saved state stay skipped. IP-based
+        modules run only for IPs missing in the saved state.
+
+        Raises
+        ------
+        ValueError
+            If windows are not time windows, the dataset is missing or the saved state
+            was not produced by time windowing.
+        """
+
+        if self.window_config.type != "time":
+            raise ValueError("DAF:: windowed reannotation requires time windows")
+        if self.arg.dataset is None:
+            raise ValueError("DAF:: windowed reannotation requires a dataset")
+
+        logger.info("Process reannotation in windows:")
+        previous_ips = IPDataFile(self.arg.reannotation).load()
+        if any(not ip.window_results for ip in previous_ips):
+            raise ValueError("DAF:: windowed reannotation requires data produced by time windowing")
+
+        saved_results, _ = self.resolver.extend(previous_ips, [], window_size=self.window_config.size)
+        saved_observations = set()
+        flagged = {}
+        for result in saved_results:
+            for observation in result.observations:
+                saved_observations.add((observation.ip_address, result.metadata.start))
+                if observation.multi_device:
+                    flagged.setdefault(observation.ip_address, result.metadata.index)
+
+        new_results = []
+        for window in self.windows():
+            unseen = self.unseen_rows(window, saved_observations)
+            if not unseen.any():
+                continue
+            result = self.process_window(FlowWindow(window.metadata, window.flows[unseen].copy()), flagged)
+            if result is not None:
+                new_results.append(result)
+
+        merged_results, appended_ips = self.resolver.extend(
+            previous_ips, new_results, window_size=self.window_config.size
+        )
+        if appended_ips:
+            ip_addresses = self.resolver.resolve(merged_results)
+            previous_by_ip = {str(ip.ip_addr): ip for ip in previous_ips}
+            unseen_ips = []
+            for ip in ip_addresses:
+                previous = previous_by_ip.get(str(ip.ip_addr))
+                if previous is None:
+                    unseen_ips.append(ip)
+                    continue
+                # Keep annotations of IP-based modules from the saved state.
+                for name, annotation in previous.annotations.items():
+                    if name not in ip.annotations:
+                        ip.add_annotation(name, annotation)
+                ip.data = {**previous.data, **ip.data}
+            logger.info("  -- running IP-based annotators for unseen IPs ... ")
+            self.module_runner.run(unseen_ips, {}, kind="ip")
+        else:
+            ip_addresses = previous_ips
+
+        self.finalize(ip_addresses)
+        self.export(ip_addresses)
+
+
+__all__ = ["DAFRunner", "ModuleRunner", "WindowedDAFRunner"]

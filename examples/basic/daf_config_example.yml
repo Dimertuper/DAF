@@ -1,0 +1,66 @@
+daf:
+  ip_ranges: "ALL"
+  src_ip_field: "SRC_IP"
+  dst_ip_field:
+  src_port_field: "SRC_PORT"
+  dst_port_field: "DST_PORT"
+  annotators_path: "./annotators"
+  detectors_path: "./detectors"
+  os_taxonomy_path: "../taxonomies/os_taxonomy.json"
+  device_taxonomy_path: "../taxonomies/dev_taxonomy.json"
+  min_annotation_count: 2
+  min_annotators_count: 2
+  export_full_annotation: True
+  threads: True
+  data_export: True
+
+nat_detector:
+  enabled: True
+  path: auto
+  field: "TTL"
+
+hand_annotator:
+  enabled: True
+  path: auto
+  db: "../examples/basic/hand_annotator_rules_example.csv"
+
+hostname_annotator:
+  enabled: False   # Change to True to enable
+  path: auto
+  full_db: "../examples/basic/hostname_annotator_full_match_example.csv"
+  sequences_db: "../examples/basic/hostname_annotator_sequences_example.csv"
+  subsequences_db: "../examples/basic/hostname_annotator_subsequences_example.csv"
+
+mac_annotator:
+  enabled: True
+  path: auto
+  src_mac_field: "SRC_MAC"
+  dst_mac_field: "DST_MAC"
+  db_file: "../dbs/mac_annotator-vendor_os_db.csv"
+
+shodan_annotator:
+  enabled: False      # Change to True to enable
+  path: auto
+  shodan_api_key_file: "PATH"  # Path to file containing your Shodan API key
+  shodan_api_url: "https://api.shodan.io/shodan/host/"
+  shodan_idb_url: "https://internetdb.shodan.io/"
+  base_wait_time: 10  # seconds
+  http_request_timeout: 5  # seconds
+  max_timeouts: 5
+  
+sni_annotator:
+  enabled: True
+  path: auto
+  db_file: "../dbs/sni_annotator-os_database.csv"
+  fields: ["TLS_SNI", "QUIC_SNI", ["HTTP_REQUEST_HOST", "HTTP_REQUEST_URL"], "DNS_NAME"]
+
+useragent_annotator:
+  enabled: False    # Change to True to enable
+  path: auto
+  field: "HTTP_REQUEST_AGENT"
+  keywords_db: "PATH"   # Path to keywords database
+  browsers_db: "PATH"  # Path to browsers database
+  others_db: "PATH"   # Path to other useragents database
+  full_search: True
+  mine_flag: True
+

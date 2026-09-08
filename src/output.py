@@ -12,6 +12,7 @@ Description: Naming and writing of the DAF output files.
 import argparse
 import csv
 import logging
+from typing import Tuple
 
 import pandas as pd
 
@@ -243,6 +244,47 @@ class DatasetAnnotator:
         flows.to_csv(filename, index=False)
         logger.info(f"Annotated dataset saved to {filename}")
         return flows
+
+    def write_chunks(
+        self, dataset: str, delimiter: str, filename: str, chunk_size: int = 100_000
+    ) -> Tuple[int, int]:
+        """Annotate and save a CSV dataset chunk by chunk, without loading all of it.
+
+        Parameters
+        ----------
+        dataset : str
+            Path to the CSV dataset.
+        delimiter : str
+            CSV delimiter.
+        filename : str
+            Path of the annotated CSV.
+        chunk_size : int, optional
+            Number of rows processed at once, by default 100 000.
+
+        Returns
+        -------
+        tuple
+            Number of flows and number of annotated flows.
+        """
+
+        logger.info("  -- Annotating dataset and saving to file...")
+        flow_count = 0
+        annotated_count = 0
+        first_chunk = True
+
+        for flows in pd.read_csv(dataset, delimiter=delimiter, low_memory=False, chunksize=chunk_size):
+            flows = self.annotate(flows)
+            flow_count += len(flows)
+            annotated_count += int(flows[list(ANNOTATION_FIELDS)].notna().any(axis=1).sum())
+            flows.to_csv(filename, index=False, mode="w" if first_chunk else "a", header=first_chunk)
+            first_chunk = False
+
+        if first_chunk:
+            flows = pd.read_csv(dataset, delimiter=delimiter, low_memory=False)
+            self.annotate(flows).to_csv(filename, index=False)
+
+        logger.info(f"Annotated dataset saved to {filename}")
+        return flow_count, annotated_count
 
 
 __all__ = ["ANNOTATION_FIELDS", "AnnotationListExporter", "DatasetAnnotator", "OutputPaths"]

@@ -21,8 +21,9 @@ from typing import List, Optional, Union
 from annotation import Annotation
 from config import ConfigLoader
 from loader import ModuleLoader
-from pipeline import DAFRunner
+from pipeline import DAFRunner, WindowedDAFRunner
 from taxonomy_checker import TaxonomyChecker
+from windows import WindowConfig
 
 logger = logging.getLogger("DAF")
 
@@ -214,9 +215,12 @@ class DAFApplication:
         Returns
         -------
         DAFRunner
-            Runner of the annotation process.
+            :class:`pipeline.WindowedDAFRunner` if windowing is enabled, otherwise
+            :class:`pipeline.DAFRunner`.
         """
 
+        if WindowConfig.is_enabled(self.config):
+            return WindowedDAFRunner(self.arg, self.config, self.modules)
         return DAFRunner(self.arg, self.config, self.modules)
 
     def run(self) -> None:
