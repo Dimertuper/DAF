@@ -18,7 +18,8 @@ daf:
     type: time
     size: 15min
     timestamp_field: "TIME_FIRST"
-    consensus: majority
+    consensus: majority   # majority (> 1/2 of the votes) or threshold
+    threshold: 0.5        # minimal share of the votes for consensus: threshold
 
 nat_detector:
   enabled: True

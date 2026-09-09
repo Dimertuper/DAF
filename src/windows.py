@@ -503,6 +503,161 @@ class TimeWindowIterator:
             )
 
 
+class WindowVoting:
+    """Combine values observed in several windows into one value.
+
+    Only non-empty values vote. The most common value wins if its share of the votes
+    passes the consensus rule, otherwise the voting abstains (returns None). A tie of
+    the most common values always abstains.
+
+    - ``majority``: the share must be greater than 1/2.
+    - ``threshold``: the share must be at least ``threshold``.
+
+    Attributes
+    ----------
+    method : str
+        ``"majority"`` or ``"threshold"``.
+    threshold : float
+        Minimal share of votes of the ``threshold`` method, in (0, 1].
+    """
+
+    METHODS = ("majority", "threshold")
+
+    def __init__(self, method: str = "majority", threshold: float = 0.5) -> None:
+        """Initialize the voting.
+
+        Parameters
+        ----------
+        method : str, optional
+            ``"majority"`` (default) or ``"threshold"``.
+        threshold : float, optional
+            Minimal share of votes of the ``threshold`` method, by default 0.5.
+
+        Raises
+        ------
+        ValueError
+            If the method is unknown or the threshold is not in (0, 1].
+        """
+
+        if method not in self.METHODS:
+            raise ValueError(f"Unknown window voting method {method!r}, supported: {self.METHODS}")
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            raise ValueError("Window voting threshold must be a number")
+        if not 0 < threshold <= 1:
+            raise ValueError("Window voting threshold must be in the interval (0, 1]")
+        self.method = method
+        self.threshold = float(threshold)
+
+    @classmethod
+    def from_config(cls, windowing: dict) -> WindowVoting:
+        """Create the voting from the ``daf.windowing`` configuration.
+
+        Parameters
+        ----------
+        windowing : dict
+            Windowing configuration with optional ``consensus`` and ``threshold``.
+
+        Returns
+        -------
+        WindowVoting
+            Configured voting.
+        """
+
+        return cls(windowing.get("consensus", "majority"), windowing.get("threshold", 0.5))
+
+    def accepts(self, count: int, total: int) -> bool:
+        """Return whether ``count`` of ``total`` votes passes the consensus rule.
+
+        Parameters
+        ----------
+        count : int
+            Votes of the most common value.
+        total : int
+            All non-empty votes.
+
+        Returns
+        -------
+        bool
+            True if the value is accepted.
+        """
+
+        if self.method == "majority":
+            return count > total / 2
+        return count / total >= self.threshold
+
+    def vote(self, values: Iterable[Optional[str]]) -> Optional[str]:
+        """Vote for one value.
+
+        Parameters
+        ----------
+        values : Iterable[str or None]
+            Values observed in the windows. Empty values abstain.
+
+        Returns
+        -------
+        str or None
+            The accepted value, or None.
+        """
+
+        votes = [value for value in values if value]
+        if not votes:
+            return None
+        ranking = Counter(votes).most_common(2)
+        value, count = ranking[0]
+        if len(ranking) > 1 and ranking[1][1] == count:
+            return None
+        return value if self.accepts(count, len(votes)) else None
+
+    def vote_annotation(self, annotations: List[Annotation]) -> Annotation:
+        """Build a hierarchical annotation from window annotations.
+
+        Child fields vote only within observations matching the winning parent
+        (group -> class, os_family -> os_type -> os_version).
+
+        Parameters
+        ----------
+        annotations : list
+            Annotations of one annotator in the windows.
+
+        Returns
+        -------
+        Annotation
+            Voted annotation.
+        """
+
+        group = self.vote(annotation.group for annotation in annotations)
+        group_matches = [annotation for annotation in annotations if annotation.group == group]
+        device_class = (
+            self.vote(annotation._class for annotation in group_matches) if group else None
+        )
+
+        os_family = self.vote(annotation.os_family for annotation in annotations)
+        family_matches = [
+            annotation for annotation in annotations if annotation.os_family == os_family
+        ]
+        os_type = self.vote(annotation.os_type for annotation in family_matches) if os_family else None
+        type_matches = [annotation for annotation in family_matches if annotation.os_type == os_type]
+        os_version = (
+            self.vote(annotation.os_version for annotation in type_matches) if os_type else None
+        )
+
+        return Annotation(group, device_class, os_family, os_type, os_version)
+
+    def export(self) -> dict:
+        """Return the voting configuration for the exported IP data.
+
+        Returns
+        -------
+        dict
+            ``voting`` method and, for the threshold method, the ``threshold``.
+        """
+
+        result = {"voting": self.method}
+        if self.method == "threshold":
+            result["threshold"] = self.threshold
+        return result
+
+
 class WindowConfig(Configurable):
     """Configuration of windowed processing, the ``daf.windowing`` section.
 
@@ -517,7 +672,13 @@ class WindowConfig(Configurable):
         Requirement("type", str, choices=("rows", "time"), required_if={"enabled": True}),
         Requirement("size", (int, float, str), required_if={"enabled": True}),
         Requirement("timestamp_field", str, required_if={"enabled": True, "type": "time"}),
-        Requirement("consensus", str, default="majority", choices=("majority",)),
+        Requirement("consensus", str, default="majority", choices=WindowVoting.METHODS),
+        Requirement(
+            "threshold",
+            (int, float),
+            default=0.5,
+            check=lambda value: None if 0 < value <= 1 else "must be in the interval (0, 1]",
+        ),
     )
 
     def __init__(self, config: dict) -> None:
@@ -586,6 +747,17 @@ class WindowConfig(Configurable):
 
         return self.section["size"]
 
+    def voting(self) -> WindowVoting:
+        """Create the voting of the configured consensus.
+
+        Returns
+        -------
+        WindowVoting
+            Voting of ``consensus`` with ``threshold``.
+        """
+
+        return WindowVoting(self.section["consensus"], self.section["threshold"])
+
     def windows(self, dataset: Union[str, Path], delimiter: str):
         """Create the window iterator of the dataset.
 
@@ -608,41 +780,24 @@ class WindowConfig(Configurable):
 
 
 class WindowResolver:
-    """Combine the results of all windows into one IP object per IP address."""
+    """Combine the results of all windows into one IP object per IP address.
 
-    @staticmethod
-    def majority(values: Iterable[Optional[str]]) -> Optional[str]:
-        """Return the value with more than half of the non-empty votes."""
+    Attributes
+    ----------
+    voting : WindowVoting
+        Voting combining the annotations of the windows.
+    """
 
-        votes = [value for value in values if value]
-        if not votes:
-            return None
-        value, count = Counter(votes).most_common(1)[0]
-        if count > len(votes) / 2:
-            return value
-        return None
+    def __init__(self, voting: Optional[WindowVoting] = None) -> None:
+        """Initialize the resolver.
 
-    @staticmethod
-    def majority_annotation(annotations: List[Annotation]) -> Annotation:
-        """Build a hierarchical majority annotation from window annotations.
-
-        Child fields vote only within observations matching the winning parent
-        (group -> class, os_family -> os_type -> os_version).
+        Parameters
+        ----------
+        voting : WindowVoting, optional
+            Voting combining the windows, majority voting by default.
         """
 
-        group = WindowResolver.majority(annotation.group for annotation in annotations)
-        group_matches = [annotation for annotation in annotations if annotation.group == group]
-        device_class = WindowResolver.majority(annotation._class for annotation in group_matches) if group else None
-
-        os_family = WindowResolver.majority(annotation.os_family for annotation in annotations)
-        family_matches = [annotation for annotation in annotations if annotation.os_family == os_family]
-        os_type = WindowResolver.majority(annotation.os_type for annotation in family_matches) if os_family else None
-        type_matches = [annotation for annotation in family_matches if annotation.os_type == os_type]
-        os_version = (
-            WindowResolver.majority(annotation.os_version for annotation in type_matches) if os_type else None
-        )
-
-        return Annotation(group, device_class, os_family, os_type, os_version)
+        self.voting = voting or WindowVoting()
 
     @staticmethod
     def os_annotations_conflict(left: Annotation, right: Annotation) -> bool:
@@ -694,7 +849,7 @@ class WindowResolver:
         """Combine window results into one IP object per IP address.
 
         For every flow-based annotation name, the annotations of all windows are combined
-        by hierarchical majority voting and stored as the annotation of the final IP. The
+        by hierarchical voting (see :class:`WindowVoting`) and stored as the annotation of the final IP. The
         annotations of IP-based modules and the final annotation are added afterwards by
         the pipeline.
 
@@ -733,14 +888,14 @@ class WindowResolver:
                     for _, observation in entries
                     if name in observation.annotations
                 ]
-                final_ip.add_annotation(name, self.majority_annotation(annotations))
+                final_ip.add_annotation(name, self.voting.vote_annotation(annotations))
                 os_conflict = os_conflict or self.has_os_conflict(annotations)
 
             multi_device_window = self.first_multi_device_window(entries)
             final_ip.add_data(
                 "window_voting",
                 {
-                    "voting": "majority",
+                    **self.voting.export(),
                     "windows": len(entries),
                     "multi_device_window": multi_device_window,
                     "os_conflict": os_conflict,
@@ -874,4 +1029,5 @@ __all__ = [
     "WindowObservation",
     "WindowResolver",
     "WindowResult",
+    "WindowVoting",
 ]

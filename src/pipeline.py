@@ -342,7 +342,7 @@ class WindowedDAFRunner(DAFRunner):
 
         super().__init__(arg, config, modules)
         self.window_config = WindowConfig(config)
-        self.resolver = WindowResolver()
+        self.resolver = WindowResolver(self.window_config.voting())
 
     @property
     def detector_names(self) -> list:
