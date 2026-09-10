@@ -18,7 +18,7 @@ from typing import List, Optional, Tuple
 import pandas as pd
 
 from config import Configurable, Requirement
-from ip import IP
+from ip import IP, IPCollection
 
 logger = logging.getLogger("load_ip_ranges")
 
@@ -123,7 +123,8 @@ class IPSelector(Configurable):
         Returns
         -------
         list
-            New IP objects.
+            New IP objects, one for every selected address, also if it is both a
+            source and a destination.
 
         Raises
         ------
@@ -142,20 +143,21 @@ class IPSelector(Configurable):
         if self.dst_ip_field is not None:
             ips += flows[self.dst_ip_field].unique().tolist()
 
-        ip_addresses = []
+        ip_addresses = IPCollection()
         for ip in ips:
             if self.protected_networks is None and self.protected_ip_addrs is None:
-                ip_addresses.append(IP(ip))
+                ip_addresses.add(IP(ip))
                 continue
             if ip in self.protected_ip_addrs:
-                ip_addresses.append(IP(ip))
+                ip_addresses.add(IP(ip))
+                continue
             ip_addr = ipaddress.ip_address(ip)
             for net in self.protected_networks:
                 if ip_addr in net:
-                    ip_addresses.append(IP(ip))
+                    ip_addresses.add(IP(ip))
                     break
 
-        return ip_addresses
+        return ip_addresses.to_list()
 
 
 __all__ = ["IPSelector"]

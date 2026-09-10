@@ -234,3 +234,21 @@ def test_windowed_reannotation_matches_full_run(tmp_path):
         reannotated.sort_values("ip_address").reset_index(drop=True),
         direct.sort_values("ip_address").reset_index(drop=True),
     )
+
+
+def test_ip_both_source_and_destination_is_annotated_once(tmp_path):
+    dataset = tmp_path / "flows.csv"
+    write_flows(dataset, [(0, "10.0.0.1", "linux", False), (1, "10.0.0.2", "windows", False)])
+    flows = pd.read_csv(dataset)
+    flows["DST_IP"] = ["10.0.0.2", "10.0.0.1"]
+    flows.to_csv(dataset, index=False)
+    config = module_config(dst_ip_field="DST_IP")
+    modules = modules_for(config)
+
+    create_runner(arguments(dataset), config, modules).run()
+
+    assert modules[0].calls == {"10.0.0.1": 1, "10.0.0.2": 1}
+    annotation_list = pd.read_csv(tmp_path / "flows_ip_annotation_list.csv")
+    assert annotation_list["ip_address"].tolist() == ["10.0.0.1", "10.0.0.2"]
+    assert pd.read_csv(tmp_path / "flows_annotated.csv")["os_family"].tolist() == ["linux", "windows"]
+

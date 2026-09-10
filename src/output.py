@@ -198,11 +198,12 @@ class DatasetAnnotator:
         """
 
         self.src_ip_field = src_ip_field
-        self.annotation_table = pd.DataFrame(
+        table = pd.DataFrame(
             [ip.final_annotation.ret_annotation() for ip in ip_addresses],
             index=pd.Index([str(ip.ip_addr) for ip in ip_addresses], name="ip_address"),
             columns=ANNOTATION_FIELDS,
         )
+        self.annotation_table = table[~table.index.duplicated()]
 
     def annotate(self, flows: pd.DataFrame) -> pd.DataFrame:
         """Attach the final annotations to flows by their source IP.
