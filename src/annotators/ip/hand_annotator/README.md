@@ -1,5 +1,7 @@
 # Hand Annotator
 
+**Module:** `HandAnnotator` in `hand_annotator.py`, an IP-based annotator (`IPAnnotator`). It needs only the IP address and in windowed processing runs once per IP.
+
 The Hand Annotator is enabled by default in DAF. To function correctly, hand annotations must be specified in a file named `hand_annotation_rules.csv` using the format described below.
 
 ## Parameters

@@ -1,5 +1,7 @@
 # HTTP User-Agent Annotator
 
+**Module:** `UserAgentAnnotator` in `useragent_annotator.py`, a flow-based annotator (`FlowAnnotator`). It reads User-Agent strings from the flows and in windowed processing runs in every window.
+
 This module extracts and analyzes HTTP User-Agent strings from flow records to infer OS and application metadata. It uses known signature databases derived from the WhatIsMyBrowser database.
 
 ## Parameters

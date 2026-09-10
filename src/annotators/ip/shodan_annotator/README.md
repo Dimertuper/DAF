@@ -1,5 +1,7 @@
 # Shodan Annotator
 
+**Module:** `ShodanAnnotator` in `shodan_annotator.py`, an IP-based annotator (`IPAnnotator`). It needs only the IP address and in windowed processing runs once per IP, so Shodan is queried only once.
+
 This module provides annotation functionality using the Shodan API. It first checks whether data is available for a given IP address using Shodan's InternetDB API, which has less strict rate limits and is suitable for high-volume queries. If relevant data is found, the module then retrieves detailed information from the main Shodan API, which may include operating system details of connected devices.
 
 ## Parameters

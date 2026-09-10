@@ -7,9 +7,11 @@ DAF performs both **initial annotation** and **reannotation** using saved JSON s
 
 ## Features
 
-- Modular annotator architecture
+- Modular, class-based annotator and detector architecture
+- IP-based and flow-based annotators
 - Parallel or sequential annotator execution
 - Annotation merging and conflict handling
+- Windowed processing of large datasets with window voting
 - Reannotation support
 - Per-IP metadata and annotation logs
 - Full dataset output with appended annotations
@@ -18,7 +20,9 @@ DAF performs both **initial annotation** and **reannotation** using saved JSON s
 
 ## Installation
 
-```
+Install with `pip`:
+
+```sh
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -38,17 +42,19 @@ This framework includes example configuration and dataset files, allowing you to
 
 For real annotation tasks, make sure to provide your own annotator databases and update the configuration file accordingly.
 
-Example usage:
+Example usage, run from the `src` directory:
 
-```
-./daf.py --config ../examples/daf_config_example.yml --dataset ../examples/example_dataset_large.csv --logfile ../examples/daf_example.log
+```sh
+./daf.py --config ../examples/basic/daf_config_example.yml --dataset ../examples/basic/example_dataset.csv --logfile ../examples/basic/daf_example.log
 ```
 
-Output files will be saved to the ../examples directory.
+Output files are saved next to the selected dataset. A timestamped example using
+15-minute windows is available under `examples/windowing` (`examples/windowing/run.sh`).
 
 ## Outputs
 
 - `*_annotated.csv`: Dataset with appended annotations  
+- `*_ip_annotation_list.csv`: Final (and optionally per-annotator) annotation of every IP  
 - `*_ip_data.json`: Per-IP annotation export  
 - Logs to console or file  
 - Printed annotation statistics  
@@ -66,7 +72,8 @@ Output files will be saved to the ../examples directory.
 The configuration file uses YAML format. Each module, including `daf.py`, has its own configuration section. The path to a module can be set manually or as `auto` if the module is located in the `annotators_path` or `detectors_path` directories. If a module is present in one of these directories but lacks a configuration section, a warning will be issued.
 
 Example:
-```
+
+```yaml
 daf:
   ip_ranges: ...
   src_ip_field: ...
@@ -84,29 +91,95 @@ hand_annotator:
 ### DAF Module Configuration Fields
 
 - **`daf`**
-  - `ip_ranges`: IP filtering strategy (`"ALL"`, list, etc.)  
+  - `ip_ranges`: IP filtering strategy (`"ALL"` or path to a CSV with IP addresses and networks)  
   - `src_ip_field`, `dst_ip_field`: Field names for source/destination IP  
   - `src_port_field`, `dst_port_field`: Field names for source/destination port  
   - `annotators_path`: Folder with annotator modules  
   - `detectors_path`: Folder with detector modules  
+  - `os_taxonomy_path`, `device_taxonomy_path`: Paths to the taxonomies  
   - `min_annotation_count`: Minimum consistent samples per label  
   - `min_annotators_count`: Minimum agreeing annotators to accept label  
   - `threads`: Use multi-threading for annotation  
   - `export_full_annotation`: Include all fields in output dataset  
   - `data_export`: Export IP-level data as JSON  
+  - `windowing`: Optional windowed processing, see [Windowed processing](#windowed-processing)  
 
 - **`module`**
   - `enabled`: `True` / `False`  
   - `path`: `/.../module.py` or `auto`
 
-
 ## How It Works
 
-1. **Input**: CSV flow dataset with IP-level fields.
-2. **Modular Annotation**: Annotator modules process flows grouped by source IP, outputting partial device annotations (e.g., OS, class, group).
+1. **Input**: CSV flow records. IPs are selected from the source (and optionally destination) IP column and filtered by `ip_ranges`.
+2. **Modular Annotation**: Annotator and detector modules process the IPs and output partial device annotations (e.g., OS, class, group) or multi-device evidence.
 3. **Merging**: Annotations are merged using a voting mechanism (`min_annotation_count`, `min_annotators_count`).
 4. **Finalization**: Results are stored per IP and optionally exported.
 5. **Reannotation**: Optionally loads a saved annotation file and only annotates new/unseen IPs.
+
+## Architecture
+
+DAF is object oriented. The entry point `daf.py` (`main()`) parses the arguments, sets
+up logging, loads the configuration with `ConfigLoader` and runs a `DAFApplication`
+created with it. The application loads the taxonomies and the modules, selects the
+runner (windowed or not) and starts the annotation process:
+
+| File | Classes |
+| --- | --- |
+| `daf.py` | `DAFApplication` (loads modules, selects and starts the runner), `main()` |
+| `config.py` | `ConfigLoader`, `Requirement`, `Configurable`, `ConfigError` |
+| `core.py` | `DAFModule`, `IPAnnotator`, `FlowAnnotator`, `Detector` (module base classes) |
+| `loader.py` | `ModuleLoader` (module discovery, import and initialization) |
+| `pipeline.py` | `ModuleRunner` (threads, error handling), `DAFRunner`, `WindowedDAFRunner` |
+| `windows.py` | `WindowConfig`, `RowWindowIterator`, `TimeWindowIterator`, `WindowVoting`, `WindowResolver`, window results |
+| `dataset.py`, `ip_ranges.py` | `FlowDataset`, `IPSelector` (dataset IPs filtered by `ip_ranges`) |
+| `ip.py`, `annotation.py` | `IP`, `IPCollection`, `IPDataFile`, `Annotation` |
+| `output.py`, `stats.py` | `OutputPaths`, `AnnotationListExporter`, `DatasetAnnotator`, `AnnotationStatistics` |
+| `taxonomy_checker.py` | `TaxonomyChecker` |
+
+### Configuration requirements
+
+The configuration stays a plain dictionary, but every class declares the keys it reads
+as `Requirement` objects and checks them when it is created (`Configurable`):
+
+```python
+REQUIREMENTS = (
+    Requirement("db_file", str, path="file"),              # required, file must exist
+    Requirement("timeout", (int, float), default=5, minimum=0),
+    Requirement("mode", str, default="passive", choices=("passive", "active")),
+    Requirement("xml_file", str, required_if={"mode": "passive"}),
+)
+```
+
+Missing keys get their defaults, invalid values stop DAF at startup with a message
+such as `hand_annotator.db: file does not exist: rules.csv`. The framework classes
+declare their keys of the `daf` section in the same way, e.g. `IPSelector` requires
+`src_ip_field` and `ip_ranges`, `ModuleLoader` the module directories and
+`WindowConfig` the `daf.windowing` section.
+
+### Module kinds
+
+Every annotator and detector is a class derived from one of the module kinds in
+`core.py`:
+
+| Base class | Input | Windowed processing | Modules |
+| --- | --- | --- | --- |
+| `IPAnnotator` | IP address only | Runs **once** for every IP | `hand_annotator`, `hostname_annotator`, `shodan_annotator` |
+| `FlowAnnotator` | Flows of the IP | Runs in **every window** | `sni_annotator`, `useragent_annotator`, `mac_annotator` |
+| `Detector` | Flows of the IP | Runs in **every window** | `nat_detector` |
+
+Modules are placed in folders by their kind:
+
+```
+src/annotators/ip/      hand_annotator, hostname_annotator, shodan_annotator, ...
+src/annotators/flow/    sni_annotator, useragent_annotator, mac_annotator
+src/detectors/          nat_detector (detectors are flow-based)
+```
+
+IP-based annotators receive every selected IP, including IPs without source flows.
+Flow-based annotators receive only IPs with source flows and validate the dataset
+columns they need before the run. A detector does not create an annotation: its
+result is stored in `IP.data[<detector>]` and positive results are added to
+`IP.multi_device`.
 
 ## Annotation Taxonomy
 
@@ -135,6 +208,49 @@ hand_annotator:
 - If `hand_annotator` is present, it overrides other values. Discrepancies are tracked in `hand_miss`.
 - Multi-device detection or NAT is flagged via `multi_device`.
 
+## Windowed processing
+
+DAF can process a dataset in time or row windows instead of loading it to memory at once:
+
+```yaml
+daf:
+  windowing:
+    enabled: true
+    type: time            # time or rows
+    size: 15min           # pandas duration (or seconds) for time, row count for rows
+    timestamp_field: TIME_FIRST
+    consensus: majority   # majority or threshold
+    threshold: 0.5        # used by consensus: threshold
+```
+
+Time-windowed CSV input must be sorted by `timestamp_field`; window bounds are
+`[start, end)`. For fixed row windows, use `type: rows` and a positive integer `size`.
+
+Processing of the windows:
+
+1. **Flow-based modules** (flow annotators and detectors) run in every window.
+2. **Multi-devices are not processed again**: once an IP is flagged as a multi-device
+   in a window (e.g. NAT, more MAC addresses), it is skipped in all later windows. Its
+   final result keeps the flag, the index of the window and the evidence.
+3. **Window voting**: for every flow-based annotator, its annotations from all windows
+   are combined into one annotation. Voting is hierarchical (group → class,
+   os_family → os_type → os_version) and missing values abstain:
+   - `majority`: a value needs more than 1/2 of the votes,
+   - `threshold`: a value needs at least `threshold` (0 < threshold ≤ 1) of the votes.
+
+   Ties abstain. If the windows of one annotator describe incompatible operating
+   systems, the IP is flagged as a multi-device.
+4. **IP-based modules** run only once for every IP, after all windows.
+5. The final annotation is merged from the voted flow-based annotations and the
+   IP-based annotations, as in the processing without windows.
+
+When `data_export` is enabled, `_ip_data.json` includes the voted annotations, the
+voting summary (`data["window_voting"]`) and the compact result of each window
+(`window_results`). Time-windowed reannotation processes only previously unseen IP and
+window combinations, keeps saved multi-device IPs skipped and runs IP-based modules only
+for unseen IPs. Row-window reannotation is not supported because row positions are not
+stable.
+
 ## Annotators
 
 Currently implemented:
@@ -145,23 +261,53 @@ Currently implemented:
 - `mac_annotator`
 - `hostname_annotator`
 - `hand_annotator`
-- `nat_detector` (simple temporary implementation)
+- `nat_detector` (TTL and source port heuristic)
 
 ### Adding a New Module
 
-Each annotator must implement:
+A module is a file named `<name>_annotator.py` or `<name>_detector.py` placed in its own
+folder in `annotators_path` (in `ip/` or `flow/` by its kind) or `detectors_path`. The file defines a class derived from
+`IPAnnotator`, `FlowAnnotator` or `Detector` whose `name` matches the configuration
+section:
 
 ```python
-def annotate(ip_addresses: list, config: dict, ip_data_dict: dict) -> None
+from annotation import Annotation
+from config import Requirement
+from core import FlowAnnotator
+
+
+class ExampleAnnotator(FlowAnnotator):
+    """Annotate IPs that use the TTL 128 as Windows devices."""
+
+    name = "example_annotator"          # configuration section and annotation key
+    description = "example annotation"  # label of progress logs
+    REQUIREMENTS = (Requirement("field", str),)  # keys of the module section
+    DAF_REQUIREMENTS = ()                        # keys of the daf section it reads
+
+    def setup(self) -> None:
+        """Load databases, called once before the first run."""
+
+    def required_columns(self) -> tuple:
+        """Return the dataset columns checked before the run."""
+
+        return (self.config["field"],)
+
+    def annotate_ip(self, ip, flows) -> None:
+        """Annotate one IP by its flows."""
+
+        if (flows[self.config["field"]] == 128).all():
+            ip.add_annotation(self.name, Annotation(None, None, "windows", "windows", None))
 ```
 
-Enable annotators in the config:
+An IP-based annotator implements `annotate_ip(self, ip)` instead, a detector implements
+`detect(self, ip, flows)` returning a dictionary with the boolean key `detected`.
+Enable the module in the config:
 
 ```yaml
-hand_annotator:
+example_annotator:
     enabled: True
     path: auto
-    db: "./.../.csv"
+    field: "TTL"
 ```
 
 The path to a module can be set manually or as `auto` if the module is located in the `annotators_path` or `detectors_path` directories.

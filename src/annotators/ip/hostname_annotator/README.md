@@ -1,5 +1,7 @@
 # Hostname Annotator
 
+**Module:** `HostnameAnnotator` in `hostname_annotator.py`, an IP-based annotator (`IPAnnotator`). It needs only the IP address and in windowed processing runs once per IP.
+
 The Hostname Annotator uses reverse DNS lookups to obtain the hostname of a device, which is then compared against its database. To function correctly, hostname annotation patterns must be defined in the following CSV files: `full-math.csv`, `sequences.csv`, and `subsequences.csv`. Each file requires a specific format, described below.
 
 ## Parameters

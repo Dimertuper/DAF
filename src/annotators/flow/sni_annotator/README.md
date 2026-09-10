@@ -1,5 +1,7 @@
 # SNI Annotator
 
+**Module:** `SNIAnnotator` in `sni_annotator.py`, a flow-based annotator (`FlowAnnotator`). It reads server names from the flows and in windowed processing runs in every window.
+
 This module leverages OS-specific domains and URI paths used for updates or other system behaviors. It extracts `(URL, URI)` pairs from flow data and matches them against a database of known URL/URI-to-OS mappings. If a match is found, the module assigns annotation. Database is hancrafted.
 
 ## Parameters
