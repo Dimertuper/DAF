@@ -368,6 +368,16 @@ Line 69: self.ip_addr = ipaddress.ip_address(ip_addr) -> self.ip_addr = ip_addr
 Improved and official MAC support is planned for a future release.
 
 
+## Tests
+
+Unit tests use `pytest` and run from the repository root. They are organized by the
+tested part: `tests/daf` (framework), `tests/annotators` and `tests/detectors`.
+
+```sh
+pip install pytest
+python -m pytest
+```
+
 ## License
 
 BSD-3-Clause  
