@@ -1,6 +1,6 @@
 """Tests of the MAC annotator."""
 
-from helpers import ANNOTATORS, ROOT, daf_config, flows_of, ips, module
+from helpers import ANNOTATORS, ROOT, daf_config, flows_of, ips, module, per_ip_and_batch, random_flows
 
 mac = module(ANNOTATORS / "flow" / "mac_annotator" / "mac_annotator.py")
 DB = ROOT / "dbs" / "mac_annotator-vendor_os_db.csv"
@@ -45,3 +45,13 @@ def test_destination_macs_annotate_ips_without_source_flows():
 
     assert not annotator.requires_src_flows
     assert destination.annotations["mac_annotator"].os_family == "macos"
+
+
+def test_batch_equals_per_ip():
+    flows = random_flows({"SRC_MAC": ["00:05:02:11:22:33", "00:10:FA:00:00:02", "FF:FF:FF:00:00:00", None]}, ips=60)
+    config = daf_config(mac_annotator={"db_file": str(DB), "src_mac_field": "SRC_MAC"})
+
+    per_ip, batch = per_ip_and_batch(lambda: mac.MACAnnotator(config), flows)
+
+    assert per_ip == batch
+    assert any(ip["multi_device"] for ip in batch) and any(ip["annotations"] for ip in batch)

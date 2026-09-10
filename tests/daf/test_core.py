@@ -6,6 +6,7 @@ import pytest
 from annotation import Annotation
 from config import ConfigError, Requirement
 from helpers import daf_config, flows_of, ips
+from dataset import FlowDataset
 from core import Detector, FlowAnnotator, IPAnnotator
 
 
@@ -125,3 +126,27 @@ def test_daf_requirements_are_checked():
     del config["daf"]["src_port_field"]
     with pytest.raises(ConfigError, match="daf.src_port_field"):
         NeedsPort(config)
+
+
+def test_flow_dataset_is_a_lazy_mapping():
+    flows = pd.DataFrame({"SRC_IP": ["10.0.0.2", "10.0.0.1", "10.0.0.2"], "X": [1, 2, 3]})
+    dataset = FlowDataset(flows, "SRC_IP")
+
+    assert "10.0.0.1" in dataset and len(dataset) == 2
+    assert dataset._groups is None
+    assert dataset["10.0.0.2"]["X"].tolist() == [1, 3]
+    assert list(dataset) == ["10.0.0.1", "10.0.0.2"]
+    assert list(dataset.flows_by_ip({"10.0.0.1"})) == ["10.0.0.1"]
+    assert FlowDataset.coerce(dataset, "SRC_IP") is dataset
+    assert len(FlowDataset.coerce({"10.0.0.1": flows.iloc[[1]]}, "SRC_IP").flows) == 1
+    assert len(FlowDataset.coerce({}, "SRC_IP")) == 0
+
+
+def test_detector_without_detect_all_works_ip_by_ip():
+    module = ThresholdDetector(daf_config(threshold_detector={"limit": 1}))
+    many = ips("10.0.0.2")[0]
+
+    module.run([many], FlowDataset(flows_of("10.0.0.2", rows=3), "SRC_IP"))
+
+    assert module.detect_all([many], {}) is None
+    assert many.data["threshold_detector"] == {"detected": True, "flows": 3}

@@ -18,6 +18,7 @@ import pandas as pd
 
 from config import Requirement
 from core import FlowAnnotator
+from dataset import FlowDataset
 from ip import Annotation
 
 logger = logging.getLogger("SNI Annotator")
@@ -92,6 +93,8 @@ class SNIDatabase:
 
         os_family = os_type = group = _class = None
         host, uri = data
+        if not isinstance(uri, str):  # missing URIs are read as NaN
+            uri = None
 
         host = host.strip()
         os = self.os_db.get(host, None)
@@ -149,7 +152,7 @@ class SNIAnnotator(FlowAnnotator):
     name = "sni_annotator"
     description = "SNI Annotation"
     REQUIREMENTS = (Requirement("db_file", str), Requirement("fields", list))
-    DAF_REQUIREMENTS = (Requirement("min_annotation_count", int),)
+    DAF_REQUIREMENTS = (Requirement("min_annotation_count", int), Requirement("src_ip_field", str))
 
     @staticmethod
     def most_common(lst: list) -> str:
@@ -322,6 +325,67 @@ class SNIAnnotator(FlowAnnotator):
             return
         self.fields = self.fields_from_config(self.config, flows)
 
+    @staticmethod
+    def server_names_by_ip(flows: pd.DataFrame, src_ip_field: str, host_field: str, uri_field) -> dict:
+        """Collect the distinct [host, uri] pairs of all IP addresses at once.
+
+        The result is the same as :meth:`server_names` applied to the flows of every IP.
+
+        Parameters
+        ----------
+        flows : pd.DataFrame
+            Flows of all IP addresses.
+        src_ip_field : str
+            Name of the source IP column.
+        host_field : str
+            Field with hostnames.
+        uri_field : str or None
+            Field with URIs.
+
+        Returns
+        -------
+        dict
+            Lists of [host, uri] pairs keyed by IP address string. IPs without a
+            hostname are omitted.
+        """
+
+        columns = [src_ip_field, host_field] + ([uri_field] if uri_field is not None else [])
+        pairs = flows.loc[flows[host_field].notna(), columns]
+        if uri_field is not None:
+            pairs = pairs.replace({uri_field: {"": None}})
+        pairs = pairs.drop_duplicates()
+
+        result = {}
+        keys = pairs[src_ip_field].astype(str).tolist()
+        if uri_field is not None:
+            rows = pairs[[host_field, uri_field]].values.tolist()
+        else:
+            rows = [[value, None] for value in pairs[host_field].tolist()]
+        for key, row in zip(keys, rows):
+            result.setdefault(key, []).append(row)
+        return result
+
+    def annotate_all(self, ip_addresses: list, flows_by_ip) -> None:
+        """Annotate all IP addresses, collecting the server names of all flows at once.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Target IP objects.
+        flows_by_ip : Mapping
+            Flows keyed by source IP address string.
+        """
+
+        dataset = FlowDataset.coerce(flows_by_ip, self.daf_config["src_ip_field"])
+        names = {
+            (host, uri): self.server_names_by_ip(dataset.flows, dataset.src_ip_field, host, uri)
+            for host, uri in self.fields
+        }
+        for ip in ip_addresses:
+            key = str(ip.ip_addr)
+            for host, uri in self.fields:
+                self.annotate_server_names(ip, host, names[(host, uri)].get(key))
+
     def annotate_ip(self, ip, flows) -> None:
         """Annotate one IP address by the server names found in each configured field.
 
@@ -334,26 +398,40 @@ class SNIAnnotator(FlowAnnotator):
         """
 
         for host, uri in self.fields:
-            data = self.server_names(flows, host, uri)
-            if data is not None:
-                ip.add_data(f"sni_annotator_{host.split(' ')[-1]}", data)
-                (
-                    group,
-                    _class,
-                    os_family,
-                    os_type,
-                    os_version,
-                    multi_flag,
-                ) = self.annotation_from_server_names(
-                    data,
-                    self.sni_db,
-                    self.daf_config["min_annotation_count"],
-                )
+            self.annotate_server_names(ip, host, self.server_names(flows, host, uri))
 
-                if len(multi_flag) > 0:
-                    ip.multi_device.append([host.split(" ")[-1], multi_flag])
+    def annotate_server_names(self, ip, host: str, data) -> None:
+        """Annotate one IP address by the server names of one field.
 
-                ip.add_annotation(
-                    f"sni_annotator_{host.split(' ')[-1]}",
-                    Annotation(group, _class, os_family, os_type, os_version),
-                )
+        Parameters
+        ----------
+        ip : IP
+            IP object to annotate.
+        host : str
+            Field of the server names.
+        data : list or None
+            [host, uri] pairs of the IP, see :meth:`server_names`.
+        """
+
+        if data is not None:
+            ip.add_data(f"sni_annotator_{host.split(' ')[-1]}", data)
+            (
+                group,
+                _class,
+                os_family,
+                os_type,
+                os_version,
+                multi_flag,
+            ) = self.annotation_from_server_names(
+                data,
+                self.sni_db,
+                self.daf_config["min_annotation_count"],
+            )
+
+            if len(multi_flag) > 0:
+                ip.multi_device.append([host.split(" ")[-1], multi_flag])
+
+            ip.add_annotation(
+                f"sni_annotator_{host.split(' ')[-1]}",
+                Annotation(group, _class, os_family, os_type, os_version),
+            )

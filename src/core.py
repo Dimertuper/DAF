@@ -11,11 +11,13 @@ Description: Base classes of DAF annotator and detector modules.
 
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from typing import Optional
 
 import pandas as pd
 
 from config import ConfigError, Configurable
+from dataset import FlowDataset
 from ip import IP
 
 
@@ -160,8 +162,7 @@ class DAFModule(Configurable, ABC):
         """Annotate a batch of IP addresses.
 
         Calls :meth:`setup` on first use, then :meth:`before_run`, and finally
-        :meth:`annotate` for each IP selected by :meth:`select_targets` while logging
-        the progress.
+        :meth:`annotate_all` with the IPs selected by :meth:`select_targets`.
 
         Parameters
         ----------
@@ -179,10 +180,27 @@ class DAFModule(Configurable, ABC):
             self.logger.info(f"    -- {self.label} ... skipped (no applicable IPs)")
             return
         self.before_run(targets, flows_by_ip)
+        self.annotate_all(targets, flows_by_ip)
+        self.logger.info(f"    -- {self.label} ... DONE")
 
-        total_ips = len(targets)
+    def annotate_all(self, ip_addresses: list, flows_by_ip: Mapping) -> None:
+        """Annotate all target IP addresses of a run.
+
+        The default implementation calls :meth:`annotate` for every IP and logs the
+        progress. Modules may override it to process the flows of all IPs at once,
+        see :class:`dataset.FlowDataset`.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Target IP objects, see :meth:`select_targets`.
+        flows_by_ip : Mapping
+            Flows keyed by source IP address string, usually a :class:`dataset.FlowDataset`.
+        """
+
+        total_ips = len(ip_addresses)
         log_interval = max(1, total_ips // 10)
-        for cnt_ip, ip in enumerate(targets, start=1):
+        for cnt_ip, ip in enumerate(ip_addresses, start=1):
             if self.daf_config.get("progress_print") and (
                 cnt_ip % log_interval == 0 or cnt_ip == total_ips
             ):
@@ -190,8 +208,6 @@ class DAFModule(Configurable, ABC):
                 self.logger.info(f"    -- {self.label} ... {progress:.0f} %")
 
             self.annotate(ip, flows_by_ip.get(str(ip.ip_addr)))
-
-        self.logger.info(f"    -- {self.label} ... DONE")
 
     @abstractmethod
     def annotate(self, ip: IP, flows: Optional[pd.DataFrame]) -> None:
@@ -315,7 +331,10 @@ class FlowAnnotator(DAFModule):
             Flow DataFrames keyed by source IP address string.
         """
 
-        sample = next((flows for flows in flows_by_ip.values() if not flows.empty), None)
+        if isinstance(flows_by_ip, FlowDataset):
+            sample = flows_by_ip.flows if not flows_by_ip.flows.empty else None
+        else:
+            sample = next((flows for flows in flows_by_ip.values() if not flows.empty), None)
         if sample is not None:
             self.validate_flows(sample)
 
@@ -360,6 +379,63 @@ class Detector(FlowAnnotator):
 
     evidence_label: str = ""
 
+    def store_result(self, ip: IP, result: Optional[dict]) -> None:
+        """Store a detection result in the IP object.
+
+        Parameters
+        ----------
+        ip : IP
+            IP object that was checked.
+        result : dict or None
+            Detection result, None if the detection could not be performed.
+        """
+
+        if result is None:
+            return
+        ip.add_data(self.name, result)
+        if result.get("detected"):
+            ip.multi_device.append([self.evidence_label or self.name, result])
+
+    def annotate_all(self, ip_addresses: list, flows_by_ip: Mapping) -> None:
+        """Detect all target IP addresses, at once if :meth:`detect_all` supports it.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Target IP objects.
+        flows_by_ip : Mapping
+            Flows keyed by source IP address string.
+        """
+
+        results = self.detect_all(ip_addresses, flows_by_ip)
+        if results is None:
+            super().annotate_all(ip_addresses, flows_by_ip)
+            return
+        for ip in ip_addresses:
+            self.store_result(ip, results.get(str(ip.ip_addr)))
+
+    def detect_all(self, ip_addresses: list, flows_by_ip: Mapping) -> Optional[dict]:
+        """Detect all target IP addresses at once.
+
+        The default implementation returns None, so every IP is detected separately by
+        :meth:`detect`. Detectors override it to process the flows of all IPs at once.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Target IP objects.
+        flows_by_ip : Mapping
+            Flows keyed by source IP address string.
+
+        Returns
+        -------
+        dict or None
+            Results keyed by IP address string (IPs without a result are omitted), or
+            None if the detector works IP by IP.
+        """
+
+        return None
+
     def annotate_ip(self, ip: IP, flows: Optional[pd.DataFrame]) -> None:
         """Run the detection on one IP address and store its result.
 
@@ -373,12 +449,7 @@ class Detector(FlowAnnotator):
 
         if flows is None or flows.empty:
             return
-        result = self.detect(ip, flows)
-        if result is None:
-            return
-        ip.add_data(self.name, result)
-        if result.get("detected"):
-            ip.multi_device.append([self.evidence_label or self.name, result])
+        self.store_result(ip, self.detect(ip, flows))
 
     @abstractmethod
     def detect(self, ip: IP, flows: pd.DataFrame) -> Optional[dict]:

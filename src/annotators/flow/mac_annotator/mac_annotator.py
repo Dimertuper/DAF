@@ -18,6 +18,7 @@ import pandas as pd
 
 from config import Requirement
 from core import FlowAnnotator
+from dataset import FlowDataset
 from ip import Annotation
 
 logger = logging.getLogger("MAC Annotator")
@@ -135,7 +136,7 @@ class MACAnnotator(FlowAnnotator):
         Requirement("src_mac_field", str),
         Requirement("dst_mac_field", str, required=False),
     )
-    DAF_REQUIREMENTS = (Requirement("dst_ip_field", str, default=None),)
+    DAF_REQUIREMENTS = (Requirement("dst_ip_field", str, default=None), Requirement("src_ip_field", str))
 
     @property
     def requires_src_flows(self) -> bool:
@@ -208,6 +209,47 @@ class MACAnnotator(FlowAnnotator):
                 for k, v in pd.concat(flows_by_ip.values()).groupby(self.daf_config["dst_ip_field"])
             }
 
+    @staticmethod
+    def macs_by_ip(flows: pd.DataFrame, src_ip_field: str, field: str) -> dict:
+        """Collect the distinct MAC addresses of all IP addresses at once.
+
+        Parameters
+        ----------
+        flows : pd.DataFrame
+            Flows of all IP addresses.
+        src_ip_field : str
+            Name of the source IP column.
+        field : str
+            MAC address column.
+
+        Returns
+        -------
+        dict
+            Lists of MAC addresses keyed by IP address string, in the order of the flows.
+        """
+
+        pairs = flows.loc[flows[field].notna(), [src_ip_field, field]].drop_duplicates()
+        result = {}
+        for key, mac in zip(pairs[src_ip_field].astype(str).tolist(), pairs[field].tolist()):
+            result.setdefault(key, []).append(mac)
+        return result
+
+    def annotate_all(self, ip_addresses: list, flows_by_ip) -> None:
+        """Annotate all IP addresses, collecting the source MACs of all flows at once.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            Target IP objects.
+        flows_by_ip : Mapping
+            Flows keyed by source IP address string.
+        """
+
+        dataset = FlowDataset.coerce(flows_by_ip, self.daf_config["src_ip_field"])
+        src_macs = self.macs_by_ip(dataset.flows, dataset.src_ip_field, self.config["src_mac_field"])
+        for ip in ip_addresses:
+            self.annotate_macs(ip, src_macs.get(str(ip.ip_addr)))
+
     def annotate_ip(self, ip, flows) -> None:
         """Annotate one IP address by its MAC address.
 
@@ -220,9 +262,21 @@ class MACAnnotator(FlowAnnotator):
         """
 
         key = str(ip.ip_addr)
-        macs = self.collect_macs(
-            key, {key: flows} if flows is not None else None, self.config["src_mac_field"]
+        self.annotate_macs(
+            ip, self.collect_macs(key, {key: flows} if flows is not None else None, self.config["src_mac_field"])
         )
+
+    def annotate_macs(self, ip, macs: Optional[list]) -> None:
+        """Annotate one IP address by its source MACs and, if configured, destination MACs.
+
+        Parameters
+        ----------
+        ip : IP
+            IP object to annotate.
+        macs : list or None
+            Distinct source MAC addresses of the IP.
+        """
+
         if self._dst_grouped_dfs is not None:
             if "dst_mac_field" not in self.config:
                 logger.warning(

@@ -301,6 +301,13 @@ class ExampleAnnotator(FlowAnnotator):
 
 An IP-based annotator implements `annotate_ip(self, ip)` instead, a detector implements
 `detect(self, ip, flows)` returning a dictionary with the boolean key `detected`.
+
+Flow-based modules receive the flows as a `FlowDataset`: a mapping of IP addresses to
+their flows that also holds the whole table of the dataset or window (`flows`).
+Annotating IP by IP is the simplest option, but calling pandas for each of thousands of
+IPs is slow. A module can instead override `annotate_all(ip_addresses, flows_by_ip)`
+(or `detect_all` of a detector) and process the whole table at once, as the SNI, MAC
+and NAT modules do; their results are the same as IP by IP.
 Enable the module in the config:
 
 ```yaml

@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 
 from config import ConfigError
-from helpers import DETECTORS, daf_config, flows_of, ips, module
+from helpers import DETECTORS, daf_config, flows_of, ips, module, per_ip_and_batch, random_flows
 
 nat = module(DETECTORS / "nat_detector" / "nat_detector.py")
 
@@ -42,3 +42,13 @@ def test_missing_columns_are_reported():
 
     with pytest.raises(KeyError, match="TTL"):
         detector.run(ips("10.0.0.1"), {"10.0.0.1": pd.DataFrame({"SRC_IP": ["10.0.0.1"], "SRC_PORT": [1]})})
+
+
+def test_heuristic_batch_equals_per_ip():
+    flows = random_flows({"TTL": [0, 64, 128, 255, None], "SRC_PORT": list(range(0, 40))}, rows=2000)
+    config = daf_config(nat_detector={"field": "TTL", "min_unique_ttl": 3, "min_unique_src_ports": 25})
+
+    per_ip, batch = per_ip_and_batch(lambda: nat.NATDetector(config), flows)
+
+    assert per_ip == batch
+    assert {ip["data"]["nat_detector"]["detected"] for ip in batch} == {True, False}

@@ -3,7 +3,10 @@
 import importlib
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+
+from dataset import FlowDataset
 
 from ip import IP
 
@@ -59,3 +62,31 @@ def module(path: Path):
     """Import a shipped module file under the name DAF uses, e.g. ``annotators.x.x``."""
 
     return importlib.import_module(".".join(path.relative_to(SRC).with_suffix("").parts))
+
+
+def random_flows(columns: dict, rows: int = 400, ips: int = 30, seed: int = 0) -> pd.DataFrame:
+    """Return random flows of ``ips`` source IPs, column values drawn from ``columns``."""
+
+    rng = np.random.default_rng(seed)
+    data = {"SRC_IP": [f"10.0.0.{index}" for index in rng.integers(1, ips + 1, rows)]}
+    for name, values in columns.items():
+        data[name] = [values[index] for index in rng.integers(0, len(values), rows)]
+    return pd.DataFrame(data)
+
+
+def per_ip_and_batch(module_factory, flows: pd.DataFrame) -> tuple:
+    """Annotate the same flows IP by IP and all at once, return both exported states."""
+
+    dataset = FlowDataset(flows, "SRC_IP")
+    addresses = sorted(dataset.ip_keys())
+
+    per_ip = ips(*addresses)
+    module = module_factory()
+    module.ensure_setup()
+    module.before_run(per_ip, dict(dataset.groups))
+    for ip in per_ip:
+        module.annotate(ip, dataset.groups.get(str(ip.ip_addr)))
+
+    batch = ips(*addresses)
+    module_factory().run(batch, FlowDataset(flows, "SRC_IP"))
+    return [ip.export() for ip in per_ip], [ip.export() for ip in batch]
