@@ -12,6 +12,7 @@ Description: Naming and writing of the DAF output files.
 import argparse
 import csv
 import logging
+from pathlib import Path
 from typing import Tuple
 
 import pandas as pd
@@ -32,6 +33,9 @@ class OutputPaths:
         Path to the flow dataset.
     reannotation : str or None
         Path to the reannotation JSON file.
+    output_source : str or None
+        Input of an IP source module (e.g. an Nmap report) naming the outputs of runs
+        without a dataset.
     """
 
     def __init__(self, arg: argparse.Namespace) -> None:
@@ -45,6 +49,7 @@ class OutputPaths:
 
         self.dataset = arg.dataset
         self.reannotation = arg.reannotation
+        self.output_source = None
 
     @property
     def dataset_base(self) -> str:
@@ -59,13 +64,21 @@ class OutputPaths:
         return self.reannotation.split(".json")[0]
 
     @property
+    def source_base(self) -> str:
+        """Return the output source path without its suffix."""
+
+        return str(Path(self.output_source).with_suffix(""))
+
+    @property
     def annotation_list(self) -> str:
         """Return the path of the IP annotation list CSV."""
 
         if self.reannotation is not None:
             base = self.dataset_base if self.dataset is not None else self.reannotation_base
             return f"{base}_ip_annotation_list_reannotation.csv"
-        return f"{self.dataset_base}_ip_annotation_list.csv"
+        if self.dataset is not None:
+            return f"{self.dataset_base}_ip_annotation_list.csv"
+        return f"{self.source_base}_ip_annotation_list.csv"
 
     @property
     def annotated_dataset(self) -> str:
@@ -78,7 +91,9 @@ class OutputPaths:
         """Return the path of the exported IP data JSON."""
 
         if self.reannotation is None:
-            return f"{self.dataset_base}_ip_data.json"
+            if self.dataset is not None:
+                return f"{self.dataset_base}_ip_data.json"
+            return f"{self.source_base}_ip_data.json"
         return f"{self.reannotation_base}_ip_data_updated.json"
 
 

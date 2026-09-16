@@ -19,6 +19,14 @@ nat_detector:
   path: auto
   field: "TTL"
 
+nmap_annotator:
+  enabled: False   # Change to True to enable
+  path: auto
+  xml_file: "../examples/nmap/nmap_scan_example.xml"
+  db_file: "../dbs/nmap_annotator-rules.csv"
+  min_os_accuracy: 95
+  min_service_confidence: 7
+
 hand_annotator:
   enabled: True
   path: auto

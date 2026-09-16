@@ -86,8 +86,10 @@ def test_logging_can_be_disabled_and_enabled_again(tmp_path):
     assert "enabled again" in (tmp_path / "again.log").read_text()
 
 
-def test_dataset_or_reannotation_is_required():
-    arg = DAFApplication.parse_arguments(["--config", "config.yml"])
+def test_dataset_reannotation_or_ip_source_is_required(monkeypatch):
+    monkeypatch.chdir(ROOT / "src")
+    arg = DAFApplication.parse_arguments(["--config", "../examples/basic/daf_config_example.yml"])
+    app = DAFApplication(arg, ConfigLoader(arg.config).load())
 
     with pytest.raises(ValueError, match="No dataset"):
-        DAFApplication(arg, {"daf": {}}).load()
+        app.load()

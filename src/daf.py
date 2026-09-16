@@ -20,6 +20,7 @@ from typing import List, Optional, Union
 # Local Imports
 from annotation import Annotation
 from config import ConfigLoader
+from core import IPSource
 from loader import ModuleLoader
 from pipeline import DAFRunner, WindowedDAFRunner
 from taxonomy_checker import TaxonomyChecker
@@ -194,11 +195,8 @@ class DAFApplication:
         Raises
         ------
         ValueError
-            If neither a dataset nor a reannotation file is given.
+            If there is neither a dataset, a reannotation file nor an IP source module.
         """
-
-        if self.arg.dataset is None and self.arg.reannotation is None:
-            raise ValueError("No dataset or reannotation file specified. Exiting.")
 
         Annotation.set_taxonomy_checker(TaxonomyChecker.from_config(self.config))
 
@@ -208,6 +206,12 @@ class DAFApplication:
         logger.info("Loaded annotators:")
         for module in self.modules:
             logger.info(f"\t{module.name} ({type(module).__name__})")
+        if (
+            self.arg.dataset is None
+            and self.arg.reannotation is None
+            and not any(isinstance(module, IPSource) for module in self.modules)
+        ):
+            raise ValueError("No dataset, reannotation file, or module input specified. Exiting.")
 
     def create_runner(self) -> DAFRunner:
         """Create the runner of the configured annotation process.
@@ -215,12 +219,14 @@ class DAFApplication:
         Returns
         -------
         DAFRunner
-            :class:`pipeline.WindowedDAFRunner` if windowing is enabled, otherwise
-            :class:`pipeline.DAFRunner`.
+            :class:`pipeline.WindowedDAFRunner` if windowing is enabled and a dataset
+            is given, otherwise :class:`pipeline.DAFRunner`.
         """
 
         if WindowConfig.is_enabled(self.config):
-            return WindowedDAFRunner(self.arg, self.config, self.modules)
+            if self.arg.dataset is not None:
+                return WindowedDAFRunner(self.arg, self.config, self.modules)
+            logger.info("No dataset given, windowing is not used.")
         return DAFRunner(self.arg, self.config, self.modules)
 
     def run(self) -> None:

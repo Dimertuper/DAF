@@ -18,7 +18,7 @@ from typing import Optional
 import pandas as pd
 
 from config import Configurable, Requirement
-from core import Detector
+from core import Detector, IPSource
 from dataset import FlowDataset
 from ip import IPCollection, IPDataFile
 from ip_ranges import IPSelector
@@ -198,6 +198,28 @@ class DAFRunner(Configurable):
         else:
             self.process_reannotation()
 
+    def collect_source_ips(self) -> list:
+        """Collect IP addresses provided by :class:`core.IPSource` modules.
+
+        When no dataset is given, the name of the first source names the output files.
+
+        Returns
+        -------
+        list
+            New IP objects of all sources, without duplicates.
+        """
+
+        source_ips = IPCollection()
+        for module in self.modules:
+            if not isinstance(module, IPSource):
+                continue
+            source, ip_addresses = module.provide_ips()
+            logger.info(f"  -- {module.name} provided {len(ip_addresses)} IPs from {source}")
+            if self.paths.output_source is None:
+                self.paths.output_source = source
+            source_ips.extend(ip_addresses)
+        return source_ips.to_list()
+
     def load_dataset(self) -> FlowDataset:
         """Load the complete dataset to memory.
 
@@ -254,16 +276,24 @@ class DAFRunner(Configurable):
         """Annotate the whole dataset in memory and export the results."""
 
         logger.info("Process annotation in memory:")
-        dataset = self.load_dataset()
+        dataset = None
+        dataset_ips = []
+        if self.arg.dataset is not None:
+            dataset = self.load_dataset()
+            logger.info("  -- getting IP addresses for annotation from dataset ... ")
+            dataset_ips = self.selector.select(dataset.flows)
 
-        logger.info("  -- getting IP addresses for annotation from dataset ... ")
-        ip_addresses = self.selector.select(dataset.flows)
-        self.annotate(ip_addresses, dataset.flows_by_ip())
+        ip_addresses = IPCollection(dataset_ips, self.collect_source_ips()).to_list()
+        if not ip_addresses:
+            raise ValueError("No IP addresses found in the configured inputs")
+        self.annotate(ip_addresses, dataset.flows_by_ip() if dataset is not None else {})
 
         self.exporter.write(ip_addresses, self.paths.annotation_list)
-        flows = DatasetAnnotator(ip_addresses, self.src_ip_field).write(
-            dataset.flows, self.paths.annotated_dataset
-        )
+        flows = None
+        if dataset is not None:
+            flows = DatasetAnnotator(ip_addresses, self.src_ip_field).write(
+                dataset.flows, self.paths.annotated_dataset
+            )
         if self.daf_config["data_export"]:
             self.export_ip_data(ip_addresses)
         self.statistics.log(ip_addresses, flows)
@@ -271,8 +301,9 @@ class DAFRunner(Configurable):
     def process_reannotation(self) -> None:
         """Reuse saved IP state and annotate only IPs not present in it.
 
-        If a dataset is given, its IPs are compared with the saved state and modules are
-        started only for unseen IPs. Saved IPs keep their evidence and annotations.
+        IPs of the dataset (if given) and of the IP sources are compared with the saved
+        state and modules are started only for unseen IPs. Saved IPs keep their evidence
+        and annotations.
         """
 
         logger.info("Process reannotation:")
@@ -280,16 +311,23 @@ class DAFRunner(Configurable):
         ip_addresses = IPCollection(IPDataFile(self.arg.reannotation).load())
 
         dataset = None
-        new_ips = []
+        dataset_ips = []
         if self.arg.dataset is not None:
             dataset = self.load_dataset()
             logger.info("  -- getting IP addresses for annotation from dataset ... ")
-            new_ips = [ip for ip in self.selector.select(dataset.flows) if ip not in ip_addresses]
+            dataset_ips = self.selector.select(dataset.flows)
+
+        new_ips = [
+            ip
+            for ip in IPCollection(dataset_ips, self.collect_source_ips())
+            if ip not in ip_addresses
+        ]
 
         if new_ips:
             logger.info("  -- starting additional annotation processes for unseen IPs ... ")
             new_keys = {str(ip.ip_addr) for ip in new_ips}
-            self.module_runner.run(new_ips, dataset.flows_by_ip(new_keys))
+            flows_by_ip = dataset.flows_by_ip(new_keys) if dataset is not None else {}
+            self.module_runner.run(new_ips, flows_by_ip)
 
         ip_addresses = ip_addresses.to_list() + new_ips
         self.finalize(ip_addresses)
@@ -427,7 +465,7 @@ class WindowedDAFRunner(DAFRunner):
             if result is not None:
                 results.append(result)
 
-        ip_addresses = self.resolver.resolve(results)
+        ip_addresses = IPCollection(self.resolver.resolve(results), self.collect_source_ips()).to_list()
         logger.info("  -- running IP-based annotators once for all IPs ... ")
         self.module_runner.run(ip_addresses, {}, kind="ip")
         self.finalize(ip_addresses)
@@ -523,10 +561,20 @@ class WindowedDAFRunner(DAFRunner):
                     if name not in ip.annotations:
                         ip.add_annotation(name, annotation)
                 ip.data = {**previous.data, **ip.data}
+        else:
+            ip_addresses = list(previous_ips)
+            unseen_ips = []
+
+        # IPs of IP sources that were not seen in any window
+        collection = IPCollection(ip_addresses)
+        for ip in self.collect_source_ips():
+            if collection.add(ip):
+                unseen_ips.append(ip)
+        ip_addresses = collection.to_list()
+
+        if unseen_ips:
             logger.info("  -- running IP-based annotators for unseen IPs ... ")
             self.module_runner.run(unseen_ips, {}, kind="ip")
-        else:
-            ip_addresses = previous_ips
 
         self.finalize(ip_addresses)
         self.export(ip_addresses)
