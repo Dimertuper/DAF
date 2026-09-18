@@ -1,0 +1,60 @@
+source,pattern,group,class,os_family,os_type,os_version
+os_class_family,^linux$,,,linux,,
+os_class_family,^windows$,,,windows,windows,
+os_class_family,^(mac os x|macos)$,,,macos,macos,
+os_class_family,^android$,,,android,android,
+os_class_family,^freebsd$,,,unix,freebsd,
+os_class_cpe,^cpe:/o:canonical:ubuntu_linux(?::([^:*]+))?,,,linux,ubuntu,\1
+os_class_cpe,^cpe:/o:debian:debian_linux(?::([^:*]+))?,,,linux,debian,\1
+os_class_cpe,^cpe:/o:redhat:enterprise_linux(?::([^:*]+))?,,,linux,rhel,\1
+os_class_cpe,^cpe:/o:centos:centos(?::([^:*]+))?,,,linux,centos,\1
+os_class_cpe,^cpe:/o:oracle:linux(?::([^:*]+))?,,,linux,oracle linux,\1
+os_class_cpe,^cpe:/o:opensuse:opensuse(?::([^:*]+))?,,,linux,opensuse,\1
+os_class_cpe,^cpe:/o:fedoraproject:fedora(?::([^:*]+))?,,,linux,fedora,\1
+os_class_cpe,^cpe:/o:archlinux:arch_linux(?::([^:*]+))?,,,linux,arch linux,\1
+os_class_cpe,^cpe:/o:manjaro:manjaro(?::([^:*]+))?,,,linux,manjaro,\1
+os_class_cpe,^cpe:/o:rocky:rocky_linux(?::([^:*]+))?,,,linux,rocky,\1
+os_class_cpe,^cpe:/o:cisco:ios(?::([^:*]+))?,,,linux,cisco ios,\1
+os_class_cpe,^cpe:/o:apple:iphone_os(?::([^:*]+))?,,,macos,ios,\1
+os_match_name,^apple ios\b,,,macos,ios,
+os_match_name,^cisco ios\b,,,linux,cisco ios,
+os_match_name,^linux\b,,,linux,,
+os_match_name,\bubuntu(?: linux)?(?: ([0-9][\w.-]*))?,,,linux,ubuntu,\1
+os_match_name,\bdebian(?: linux)?(?: ([0-9][\w.-]*))?,,,linux,debian,\1
+os_class_type,^printer$,end-device,printer,,,
+os_class_type,^firewall$,net-device,firewall,,,
+os_class_type,^(router|switch|bridge|broadband router)$,net-device,,,,
+os_class_type,^wap$,net-device,wifi router,,,
+os_class_type,^phone$,end-device,mobile,,,
+os_class_type,^voip phone$,end-device,voip,,,
+os_class_type,^webcam$,end-device,ip camera,,,
+os_class_type,^storage-misc$,server,nas,,,
+os_class_type,^proxy server$,server,proxy,,,
+os_class_type,^media device$,end-device,,,,
+service_device_type,^printer$,end-device,printer,,,
+service_device_type,^firewall$,net-device,firewall,,,
+service_device_type,^(router|switch|bridge|broadband router)$,net-device,,,,
+service_device_type,^wap$,net-device,wifi router,,,
+service_device_type,^phone$,end-device,mobile,,,
+service_device_type,^voip phone$,end-device,voip,,,
+service_device_type,^webcam$,end-device,ip camera,,,
+service_device_type,^storage-misc$,server,nas,,,
+service_device_type,^proxy server$,server,proxy,,,
+service_cpe,^cpe:/o:canonical:ubuntu_linux(?::([^:*]+))?,,,linux,ubuntu,\1
+service_cpe,^cpe:/o:debian:debian_linux(?::([^:*]+))?,,,linux,debian,\1
+service_cpe,^cpe:/o:redhat:enterprise_linux(?::([^:*]+))?,,,linux,rhel,\1
+service_cpe,^cpe:/o:centos:centos(?::([^:*]+))?,,,linux,centos,\1
+service_cpe,^cpe:/o:oracle:linux(?::([^:*]+))?,,,linux,oracle linux,\1
+service_os_type,^linux$,,,linux,,
+service_os_type,^windows$,,,windows,windows,
+service_extra_info,\bubuntu\b,,,linux,ubuntu,
+service_extra_info,\bdebian\b,,,linux,debian,
+service_name,^https?$,server,web,,,
+service_name,^(domain|dns)$,server,dns,,,
+service_name,^dhcp$,server,dhcp,,,
+service_name,^ntp$,server,ntp,,,
+service_name,^syslog$,server,syslog,,,
+service_name,^(smtp|smtps)$,server,smtp,,,
+service_name,^(imap|imaps|pop3|pop3s)$,server,mail,,,
+service_name,^(http-proxy|socks)$,server,proxy,,,
+service_name,^(openvpn|isakmp|l2tp)$,server,vpn,,,

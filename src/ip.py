@@ -316,20 +316,30 @@ class IP:
         loaded_ip.data = data.get("data", {})
         loaded_ip.hand_miss = data.get("hand_miss", [])
         loaded_ip.one_miss = data.get("one_miss", [])
-        loaded_ip.multi_device = data.get("multi_device", {})
+        loaded_ip.multi_device = data.get("multi_device", [])
 
         return loaded_ip
 
 
 def export_ip_data(ip_addresses: list, arg: argparse.Namespace) -> None:
-    """Export IP data to a file.
+    """Export complete IP state to a JSON file.
+
+    Initial dataset runs retain the existing dataset-based filename. Standalone
+    annotator runs use ``arg.output_source``, while reannotation retains its existing
+    updated-state filename. The exported state includes raw evidence, individual
+    annotations, the final annotation, and conflict diagnostics.
 
     Parameters
     ----------
     ip_addresses : list
         A list of IP addresses to export.
     arg : argparse.Namespace
-        Command line arguments.
+        Command-line arguments and, for standalone input, ``output_source``.
+
+    Returns
+    -------
+    None
+        This function writes the JSON state file and does not return a value.
     """
 
     # Collect data
@@ -337,7 +347,11 @@ def export_ip_data(ip_addresses: list, arg: argparse.Namespace) -> None:
 
     # Write data
     if arg.reannotation is None:
-        with open(f"{arg.dataset.split('.csv')[0]}_ip_data.json", "w", encoding="utf-8") as f:
+        if arg.dataset is not None:
+            filename = f"{arg.dataset.split('.csv')[0]}_ip_data.json"
+        else:
+            filename = f"{Path(arg.output_source).with_suffix('')}_ip_data.json"
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(export_data, f, indent=4)
     else:
         with open(

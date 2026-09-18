@@ -1,0 +1,23 @@
+daf:
+  ip_ranges: "ALL"
+  src_ip_field: "SRC_IP"
+  dst_ip_field:
+  src_port_field: "SRC_PORT"
+  dst_port_field: "DST_PORT"
+  annotators_path: "./annotators"
+  detectors_path: "./detectors"
+  os_taxonomy_path: "../taxonomies/os_taxonomy.json"
+  device_taxonomy_path: "../taxonomies/dev_taxonomy.json"
+  min_annotation_count: 1
+  min_annotators_count: 1
+  export_full_annotation: True
+  threads: False
+  data_export: True
+
+nmap_annotator:
+  enabled: True
+  path: auto
+  xml_file: "../examples/nmap_scan_example.xml"
+  db_file: "../dbs/nmap_annotator-rules.csv"
+  min_os_accuracy: 95
+  min_service_confidence: 7

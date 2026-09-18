@@ -12,6 +12,7 @@ Description: Functions for exporting IP annotation lists and annotating datasets
 import argparse
 import csv
 import logging
+from pathlib import Path
 
 import pandas as pd
 
@@ -21,15 +22,17 @@ logger = logging.getLogger("Output")
 def export_ip_annotation_list(ip_addresses: list, arg: argparse.Namespace, config: dict) -> None:
     """Export IP annotation list to a CSV file.
 
-    This function save all IP addresses and their annotations to a CSV file.
-    If the `export_full_annotation`, all annotations are saved. Otherwise, only the final annotation is saved.
+    Dataset and reannotation runs retain their existing filename conventions. A
+    standalone annotator input uses ``arg.output_source``. If
+    ``export_full_annotation`` is enabled, the CSV includes every enabled annotator's
+    result; otherwise it contains only the final voted annotation.
 
     Parameters
     ----------
     ip_addresses : list
         A list of IP addresses to export.
     arg : argparse.Namespace
-        Command line arguments.
+        Command-line arguments and, for standalone input, ``output_source``.
     config : dict
         Configuration dictionary.
 
@@ -43,8 +46,10 @@ def export_ip_annotation_list(ip_addresses: list, arg: argparse.Namespace, confi
             filename = f"{arg.dataset.split('.csv')[0]}_ip_annotation_list_reannotation.csv"
         else:
             filename = f"{arg.reannotation.split('.json')[0]}_ip_annotation_list_reannotation.csv"
-    else:
+    elif arg.dataset is not None:
         filename = f"{arg.dataset.split('.csv')[0]}_ip_annotation_list.csv"
+    else:
+        filename = f"{Path(arg.output_source).with_suffix('')}_ip_annotation_list.csv"
 
     with open(filename, "w", encoding="utf-8") as w:
         tmp = ["final_annotation"]

@@ -61,6 +61,9 @@ Output files will be saved to the ../examples directory.
 - `-d`: CSV delimiter. Default: ','  
 - `--reannotation`: Load data from previous annotation JSON file  
 
+An enabled annotator may also supply an input source. The Nmap annotator can therefore
+run without a dataset. With both XML and flows, DAF annotates the union of their IPs.
+
 ## Configuration
 
 The configuration file uses YAML format. Each module, including `daf.py`, has its own configuration section. The path to a module can be set manually or as `auto` if the module is located in the `annotators_path` or `detectors_path` directories. If a module is present in one of these directories but lacks a configuration section, a warning will be issued.
@@ -79,6 +82,14 @@ nat_detector:
 
 hand_annotator:
   ...
+
+nmap_annotator:
+  enabled: False
+  path: auto
+  xml_file: "../examples/nmap_scan_example.xml"
+  db_file: "../dbs/nmap_annotator-rules.csv"
+  min_os_accuracy: 95
+  min_service_confidence: 7
 ```
 
 ### DAF Module Configuration Fields
@@ -102,7 +113,7 @@ hand_annotator:
 
 ## How It Works
 
-1. **Input**: CSV flow dataset with IP-level fields.
+1. **Input**: CSV flow records, an annotator-owned source such as Nmap XML, or both.
 2. **Modular Annotation**: Annotator modules process flows grouped by source IP, outputting partial device annotations (e.g., OS, class, group).
 3. **Merging**: Annotations are merged using a voting mechanism (`min_annotation_count`, `min_annotators_count`).
 4. **Finalization**: Results are stored per IP and optionally exported.
@@ -146,6 +157,7 @@ Currently implemented:
 - `hostname_annotator`
 - `hand_annotator`
 - `nat_detector` (simple temporary implementation)
+- `nmap_annotator`
 
 ### Adding a New Module
 
@@ -165,6 +177,31 @@ hand_annotator:
 ```
 
 The path to a module can be set manually or as `auto` if the module is located in the `annotators_path` or `detectors_path` directories.
+
+### Nmap XML Annotator
+
+The Nmap annotator imports a completed XML report. DAF does not execute Nmap.
+
+Generate a baseline report with:
+
+```sh
+sudo nmap -sS -sV -O -n -T3 --top-ports 1000 \
+  -oX nmap_scan.xml 192.168.10.10
+```
+
+For a CIDR subnet, use a target such as `192.168.10.0/24`. See `examples/nmap/`
+for executable examples covering hosts, CIDRs and exclusions, deep TCP scans, selected
+TCP/UDP services, IPv6, and dry runs.
+
+Run the included standalone example from `src/`:
+
+```sh
+python daf.py --config ../examples/daf_config_nmap.yml
+```
+
+Mappings live in `dbs/nmap_annotator-rules.csv`. Generic evidence intentionally stays
+partial: generic Linux does not imply a distribution, and generic router does not imply
+`core router`.
 
 ## Reannotation
 
