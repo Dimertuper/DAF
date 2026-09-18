@@ -104,6 +104,16 @@ class DAFModule(Configurable, ABC):
         self._is_set_up = False
 
     @property
+    def deferred(self) -> bool:
+        """Return whether the module runs after all other modules of a run.
+
+        Deferred modules can use results of the other modules, e.g. the multi-device
+        flags of detectors. False by default.
+        """
+
+        return False
+
+    @property
     def label(self) -> str:
         """Return the label used in log messages.
 

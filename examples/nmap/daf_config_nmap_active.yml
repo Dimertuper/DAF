@@ -1,0 +1,33 @@
+daf:
+  ip_ranges: "ALL"
+  src_ip_field: "SRC_IP"
+  dst_ip_field:
+  src_port_field: "SRC_PORT"
+  dst_port_field: "DST_PORT"
+  annotators_path: "./annotators"
+  detectors_path: "./detectors"
+  os_taxonomy_path: "../taxonomies/os_taxonomy.json"
+  device_taxonomy_path: "../taxonomies/dev_taxonomy.json"
+  min_annotation_count: 1
+  min_annotators_count: 1
+  export_full_annotation: True
+  threads: False
+  data_export: True
+
+nmap_annotator:
+  enabled: True
+  path: auto
+  mode: active
+  nmap_path: "nmap"
+  # Unprivileged TCP connect scan with service detection. With root, the baseline is
+  # ["-sS", "-sV", "-O", "-n", "-T3", "--top-ports", "1000"].
+  arguments: ["-sT", "-sV", "-n", "-T3", "--top-ports", "1000"]
+  targets: ["127.0.0.1"]   # IPs or networks to scan in addition to the dataset IPs
+  scan_dataset_ips: True
+  output_xml: "../examples/nmap/active_scan.xml"
+  timeout: 3600
+  privileged: False
+  dry_run: False
+  db_file: "../dbs/nmap_annotator-rules.csv"
+  min_os_accuracy: 95
+  min_service_confidence: 7

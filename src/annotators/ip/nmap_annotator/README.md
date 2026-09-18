@@ -1,9 +1,14 @@
-# Nmap XML Annotator
+# Nmap Annotator
 
-**Module:** `NmapAnnotator` in `nmap_annotator.py`, an IP-based annotator (`IPAnnotator`) and an IP source (`IPSource`). It runs once per IP, also in windowed processing, and adds the IPs of the report to the annotated IPs.
+**Module:** `NmapAnnotator` in `nmap_annotator.py`, an IP-based annotator (`IPAnnotator`) and an IP source (`IPSource`). It runs once per IP, also in windowed processing.
 
-The Nmap annotator imports a completed Nmap XML report and maps its evidence to DAF's
-device and operating-system taxonomies. DAF does not run Nmap.
+The Nmap annotator maps the evidence of an Nmap XML report to DAF's device and
+operating-system taxonomies. It works in one of two modes:
+
+- **passive** (default): DAF imports a completed report (`xml_file`) and adds the
+  IPs of the report to the annotated IPs.
+- **active**: DAF runs Nmap itself on the annotated IPs and the configured `targets`,
+  see [Active mode](#active-mode).
 
 ## What Nmap contributes
 
@@ -49,6 +54,44 @@ only input, or its IPs can be combined with a flow dataset.
 For a standalone Nmap run, set `daf.min_annotators_count: 1`; a single Nmap annotation
 cannot meet a two-annotator consensus threshold. The ordinary example configuration
 keeps its existing threshold of 2.
+
+## Active mode
+
+In the active mode DAF starts Nmap, saves its XML report and annotates the IPs from it:
+
+```yaml
+nmap_annotator:
+  enabled: true
+  path: auto
+  mode: active
+  nmap_path: nmap                  # Nmap executable
+  arguments: ["-sS", "-sV", "-O", "-n", "-T3", "--top-ports", "1000"]
+  targets: ["192.168.10.0/24"]     # additional IPs or networks to scan
+  scan_dataset_ips: true           # scan the IPs selected from the dataset
+  output_xml: "../examples/nmap/active_scan.xml"
+  timeout: 3600                    # seconds, unlimited if not set
+  privileged: false                # pass --privileged for Nmap with capabilities
+  dry_run: false                   # only log the Nmap command
+  db_file: "../dbs/nmap_annotator-rules.csv"
+  min_os_accuracy: 95
+  min_service_confidence: 7
+```
+
+- **Targets** are the annotated IPs (dataset IPs filtered by `daf.ip_ranges`) if
+  `scan_dataset_ips` is true, plus all addresses of the configured `targets`. Configured
+  targets are added to the annotated IPs, so DAF can run without a dataset.
+- **Multi-devices are not scanned.** The active annotator runs after the other modules
+  (it is *deferred*), so IPs already flagged as multi-devices (e.g. by the NAT detector)
+  are skipped. In windowed processing it runs once after all windows.
+- **One scan** covers all targets. Targets are passed to Nmap in a temporary file
+  (`-iL`), the report is written by `-oX` and Nmap is started without a shell.
+  `arguments` must not contain `-iL`, `-oX` or `-oA`.
+- **Privileges**: `-sS`, `-sU`, `-O`, `-A` and other raw-socket options require root.
+  Without root DAF fails before scanning; run DAF as root, set `privileged: true` for
+  Nmap with capabilities, or use unprivileged options such as `-sT -sV`.
+- `dry_run: true` logs the Nmap command without scanning; no Nmap annotation is created.
+
+Only scan networks you are authorized to scan.
 
 ## Rule database
 

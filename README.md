@@ -327,8 +327,16 @@ The path to a module can be set manually or as `auto` if the module is located i
 
 ### Nmap Annotator
 
-The Nmap annotator imports a completed Nmap XML report and maps its service and OS
-evidence to the DAF taxonomies. Generate a baseline report with:
+The Nmap annotator maps the service and OS evidence of an Nmap XML report to the DAF
+taxonomies. In the passive mode (default) it imports a completed report. In the
+active mode (`mode: active`) DAF runs Nmap itself on the annotated IPs and the
+configured `targets`, skipping IPs already flagged as multi-devices:
+
+```sh
+python daf.py --config ../examples/nmap/daf_config_nmap_active.yml
+```
+
+For the passive mode, generate a baseline report with:
 
 ```sh
 sudo nmap -sS -sV -O -n -T3 --top-ports 1000 \

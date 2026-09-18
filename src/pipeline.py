@@ -85,6 +85,9 @@ class ModuleRunner:
         kind : str, optional
             Run only modules of this kind (``"ip"`` or ``"flow"``). All modules by default.
 
+        Modules with ``deferred`` set run after all other modules have finished, so
+        they can use their results, e.g. skip IPs flagged as multi-devices.
+
         Raises
         ------
         RuntimeError
@@ -107,19 +110,25 @@ class ModuleRunner:
             return
 
         logger.info("  -- Starting annotators:")
-        threads = []
-        for module in modules:
-            if self.threads:
-                logger.info(f"    -- {module.name} started ... ")
-                thread = Thread(target=start, args=(module,))
-                threads.append(thread)
-                thread.start()
-            else:
-                logger.info(f"    -- {module.name} started (sequential)... ")
-                start(module)
+        for phase in (
+            [module for module in modules if not module.deferred],
+            [module for module in modules if module.deferred],
+        ):
+            threads = []
+            for module in phase:
+                if self.threads:
+                    logger.info(f"    -- {module.name} started ... ")
+                    thread = Thread(target=start, args=(module,))
+                    threads.append(thread)
+                    thread.start()
+                else:
+                    logger.info(f"    -- {module.name} started (sequential)... ")
+                    start(module)
 
-        for thread in threads:
-            thread.join()
+            for thread in threads:
+                thread.join()
+            if errors:
+                break
 
         if errors:
             for name, message in errors:

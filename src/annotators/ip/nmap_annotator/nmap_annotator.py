@@ -6,14 +6,19 @@ Copyright: (C) 2026 CESNET, z.s.p.o.
 SPDX-License-Identifier: BSD-3-Clause
 
 File: nmap_annotator.py
-Description: Annotate DAF IP objects from a previously generated Nmap XML report.
+Description: Annotate DAF IP objects from an Nmap XML report, imported or produced by DAF.
 """
 
 import csv
 import ipaddress
 import logging
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
+from typing import List, Optional
 from xml.etree import ElementTree
 
 from config import Requirement
@@ -21,6 +26,20 @@ from core import IPAnnotator, IPSource
 from ip import IP, Annotation
 
 logger = logging.getLogger("Nmap Annotator")
+
+MODES = ("passive", "active")
+
+# Baseline scan: TCP SYN scan of the 1000 most common ports with service and OS detection.
+DEFAULT_ARGUMENTS = ["-sS", "-sV", "-O", "-n", "-T3", "--top-ports", "1000"]
+
+# Nmap options which need raw sockets, i.e. root or --privileged with capabilities.
+PRIVILEGED_OPTIONS = {"-sS", "-sU", "-sA", "-sW", "-sM", "-sN", "-sF", "-sX", "-sO", "-O", "-A"}
+
+# Options set by DAF itself.
+RESERVED_OPTIONS = {"-oX", "-oA", "-iL"}
+
+# Maximal number of hosts added to the annotated IPs from one configured network.
+MAX_TARGET_HOSTS = 65536
 
 RULE_SOURCES = {
     "os_match_name",
@@ -546,16 +565,254 @@ class NmapHostClassifier:
         return group, _class, os_family, os_type, os_version
 
 
-class NmapAnnotator(IPAnnotator, IPSource):
-    """Annotate IP addresses from a previously generated Nmap XML report.
+class NmapScanner:
+    """Run Nmap on a list of targets and save its XML report.
 
-    The report is parsed once. Its parsed evidence is stored under
-    ``IP.data["nmap_annotator"]`` of every IP found in the report and at most one
-    annotation per host is created from the rule database. As an :class:`IPSource`,
-    the annotator also adds the IPs of the report, so it can run without a dataset.
+    Nmap is started without a shell. Targets are passed in a temporary file
+    (``-iL``) and the report is written by ``-oX``.
 
     Attributes
     ----------
+    nmap_path : str
+        Nmap executable.
+    arguments : list
+        Nmap options, see :data:`DEFAULT_ARGUMENTS`.
+    timeout : float or None
+        Maximal duration of the scan in seconds.
+    privileged : bool
+        Pass ``--privileged`` to Nmap and skip the root check, for Nmap with
+        capabilities.
+    dry_run : bool
+        Only log the command, do not run Nmap.
+    """
+
+    def __init__(
+        self,
+        nmap_path: str = "nmap",
+        arguments: Optional[List[str]] = None,
+        timeout: Optional[float] = None,
+        privileged: bool = False,
+        dry_run: bool = False,
+    ) -> None:
+        """Initialize and validate the scanner.
+
+        Parameters
+        ----------
+        nmap_path : str, optional
+            Nmap executable, by default ``nmap``.
+        arguments : list, optional
+            Nmap options, by default :data:`DEFAULT_ARGUMENTS`.
+        timeout : float, optional
+            Maximal duration of the scan in seconds, unlimited by default.
+        privileged : bool, optional
+            Pass ``--privileged`` and skip the root check, by default False.
+        dry_run : bool, optional
+            Only log the command, by default False.
+
+        Raises
+        ------
+        ValueError
+            If the arguments are not a list of strings or contain options set by DAF.
+        """
+
+        arguments = list(DEFAULT_ARGUMENTS if arguments is None else arguments)
+        if not all(isinstance(argument, str) for argument in arguments):
+            raise ValueError("Nmap Annotator:: arguments must be a list of strings")
+        reserved = sorted(RESERVED_OPTIONS.intersection(arguments))
+        if reserved:
+            raise ValueError(f"Nmap Annotator:: arguments must not contain {', '.join(reserved)}")
+        if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
+            raise ValueError("Nmap Annotator:: timeout must be a positive number of seconds")
+
+        self.nmap_path = nmap_path
+        self.arguments = arguments
+        self.timeout = timeout
+        self.privileged = privileged
+        self.dry_run = dry_run
+
+    def command(self, targets_file: str, output_xml: str) -> List[str]:
+        """Build the Nmap command.
+
+        Parameters
+        ----------
+        targets_file : str
+            File with one target per line.
+        output_xml : str
+            Path of the XML report.
+
+        Returns
+        -------
+        list
+            Command as a list of arguments.
+        """
+
+        privileged = ["--privileged"] if self.privileged else []
+        return [self.nmap_path, *self.arguments, *privileged, "-iL", targets_file, "-oX", output_xml]
+
+    def check_privileges(self) -> None:
+        """Fail early if the options need privileges DAF does not have.
+
+        Raises
+        ------
+        PermissionError
+            If a privileged option is used without root and without ``privileged``.
+        """
+
+        options = sorted(PRIVILEGED_OPTIONS.intersection(self.arguments))
+        geteuid = getattr(os, "geteuid", None)
+        if not options or self.privileged or geteuid is None or geteuid() == 0:
+            return
+        raise PermissionError(
+            f"Nmap Annotator:: options {', '.join(options)} require root privileges. Run DAF "
+            "as root, set privileged: true for Nmap with capabilities, or use e.g. -sT "
+            "without -O."
+        )
+
+    def scan(self, targets: List[str], output_xml: str) -> bool:
+        """Scan the targets and write the XML report.
+
+        Parameters
+        ----------
+        targets : list
+            IP addresses, networks or host names accepted by Nmap.
+        output_xml : str
+            Path of the XML report.
+
+        Returns
+        -------
+        bool
+            True if the report was written, False in the dry run.
+
+        Raises
+        ------
+        FileNotFoundError
+            If the Nmap executable is not found.
+        PermissionError
+            If the options need missing privileges.
+        RuntimeError
+            If Nmap fails or exceeds the timeout.
+        """
+
+        nmap = shutil.which(self.nmap_path)
+        if nmap is None and not self.dry_run:
+            raise FileNotFoundError(f"Nmap Annotator:: Nmap executable not found: {self.nmap_path}")
+        self.check_privileges()
+
+        Path(output_xml).parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", prefix="daf_nmap_", delete=False) as file:
+            file.write("\n".join(targets) + "\n")
+            targets_file = file.name
+
+        try:
+            command = self.command(targets_file, output_xml)
+            command[0] = nmap or self.nmap_path
+            logger.info(f"    -- Nmap scan of {len(targets)} targets: {' '.join(command)}")
+            if self.dry_run:
+                logger.info("    -- Nmap dry run, scan not started")
+                return False
+            try:
+                result = subprocess.run(
+                    command,
+                    shell=False,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                )
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError(
+                    f"Nmap Annotator:: scan exceeded the timeout of {self.timeout} s"
+                ) from error
+        finally:
+            Path(targets_file).unlink(missing_ok=True)
+
+        if result.returncode != 0:
+            message = result.stderr.strip() or result.stdout.strip()
+            raise RuntimeError(f"Nmap Annotator:: Nmap failed ({result.returncode}): {message}")
+        logger.info(f"    -- Nmap report saved to {output_xml}")
+        return True
+
+
+class NmapTargets:
+    """Targets of an active Nmap scan configured as IP addresses and networks.
+
+    Attributes
+    ----------
+    addresses : list
+        IP address strings of all configured targets.
+    """
+
+    def __init__(self, targets: list) -> None:
+        """Expand the configured targets.
+
+        Parameters
+        ----------
+        targets : list
+            IP addresses and networks in CIDR notation.
+        """
+
+        self.addresses = self.expand(targets)
+
+    @staticmethod
+    def expand(targets: list) -> List[str]:
+        """Expand configured targets to the IP addresses they contain.
+
+        Parameters
+        ----------
+        targets : list
+            IP addresses and networks in CIDR notation.
+
+        Returns
+        -------
+        list
+            IP address strings.
+
+        Raises
+        ------
+        ValueError
+            If a target is not an IP address or network, or a network is too large.
+        """
+
+        addresses = []
+        for target in targets:
+            try:
+                network = ipaddress.ip_network(str(target), strict=False)
+            except ValueError as error:
+                raise ValueError(f"Nmap Annotator:: invalid target: {target}") from error
+            if network.num_addresses > MAX_TARGET_HOSTS:
+                raise ValueError(
+                    f"Nmap Annotator:: target {target} has more than {MAX_TARGET_HOSTS} addresses"
+                )
+            hosts = [network.network_address] if network.num_addresses == 1 else network.hosts()
+            addresses.extend(str(address) for address in hosts)
+        return addresses
+
+
+class NmapAnnotator(IPAnnotator, IPSource):
+    """Annotate IP addresses from an Nmap XML report.
+
+    The annotator works in one of two modes (``mode``):
+
+    - ``passive`` (default): a completed report (``xml_file``) is imported. As an
+      :class:`IPSource`, the annotator adds the IPs of the report, so it can run
+      without a dataset.
+    - ``active``: DAF runs Nmap itself (:class:`NmapScanner`). The annotated IPs
+      (if ``scan_dataset_ips``) except IPs flagged as multi-devices, and the
+      configured ``targets`` are scanned in one Nmap run. The module is deferred, so
+      the scan starts after the detectors have flagged multi-devices. The configured
+      targets are added to the annotated IPs.
+
+    The parsed evidence is stored under ``IP.data["nmap_annotator"]`` of every IP found
+    in the report and at most one annotation per host is created from the rule database.
+
+    Attributes
+    ----------
+    mode : str
+        ``passive`` or ``active``.
+    scanner : NmapScanner or None
+        Scanner of the active mode.
+    targets : NmapTargets or None
+        Configured targets of the active mode.
     evidence_by_ip : dict
         Parsed evidence keyed by IP address string.
     classifier : NmapHostClassifier
@@ -565,39 +822,144 @@ class NmapAnnotator(IPAnnotator, IPSource):
     name = "nmap_annotator"
     description = "Nmap annotation"
     REQUIREMENTS = (
-        Requirement("xml_file", str),
+        Requirement("mode", str, default="passive", choices=MODES),
+        Requirement("xml_file", str, required_if={"mode": "passive"}),
         Requirement("db_file", str),
         Requirement("min_os_accuracy", (int, float), minimum=0, maximum=100),
         Requirement("min_service_confidence", (int, float), minimum=0, maximum=10),
+        Requirement("nmap_path", str, default="nmap"),
+        Requirement("arguments", list, required=False),
+        Requirement("targets", (list, tuple), default=()),
+        Requirement("scan_dataset_ips", bool, default=True),
+        Requirement("output_xml", str, default="nmap_active_scan.xml"),
+        Requirement("timeout", (int, float), required=False),
+        Requirement("privileged", bool, default=False),
+        Requirement("dry_run", bool, default=False),
     )
+
+    def __init__(self, config: dict) -> None:
+        """Check the configuration and prepare the scanner of the active mode.
+
+        Parameters
+        ----------
+        config : dict
+            Complete DAF configuration.
+
+        Raises
+        ------
+        ValueError
+            If a scanner setting or a target is invalid.
+        """
+
+        super().__init__(config)
+        self.mode = self.config["mode"]
+        self.scanner = None
+        self.targets = None
+        if self.mode == "active":
+            self.scanner = NmapScanner(
+                nmap_path=self.config["nmap_path"],
+                arguments=self.config.get("arguments"),
+                timeout=self.config.get("timeout"),
+                privileged=self.config["privileged"],
+                dry_run=self.config["dry_run"],
+            )
+            self.targets = NmapTargets(list(self.config["targets"]))
+        self.evidence_by_ip = {}
+
+    @property
+    def deferred(self) -> bool:
+        """Run the active scan after the other modules flagged multi-devices."""
+
+        return self.mode == "active"
+
+    @property
+    def output_xml(self) -> str:
+        """Return the path of the report written in the active mode."""
+
+        return str(Path(self.config["output_xml"]).resolve())
 
     @property
     def xml_path(self) -> str:
-        """Return the absolute path to the XML report."""
+        """Return the absolute path to the XML report of the mode."""
 
+        if self.mode == "active":
+            return self.output_xml
         return str(Path(self.config["xml_file"]).resolve())
 
     def setup(self) -> None:
-        """Parse the XML report and load the rule database."""
+        """Load the rule database and, in the passive mode, parse the XML report."""
 
-        self.evidence_by_ip = NmapReportParser.parse(self.xml_path)
         self.classifier = NmapHostClassifier(
             NmapRuleSet(self.config["db_file"]),
             self.config["min_os_accuracy"],
             self.config["min_service_confidence"],
         )
+        if self.mode == "passive":
+            self.evidence_by_ip = NmapReportParser.parse(self.xml_path)
 
     def provide_ips(self) -> tuple:
-        """Provide the source name and IP objects of the hosts in the report.
+        """Provide the source name and IP objects of the module's input.
 
         Returns
         -------
         tuple
-            Absolute XML report path and new IP objects.
+            Absolute XML report path and new IP objects: the hosts of the report in
+            the passive mode, the configured targets in the active mode.
         """
 
         self.ensure_setup()
+        if self.mode == "active":
+            return self.xml_path, [IP(ip_addr) for ip_addr in self.targets.addresses]
         return self.xml_path, [IP(ip_addr) for ip_addr in self.evidence_by_ip]
+
+    def select_scan_targets(self, ip_addresses: list) -> List[str]:
+        """Select the targets of the active scan.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            IP objects annotated in this run.
+
+        Returns
+        -------
+        list
+            IP address strings without duplicates. IPs flagged as multi-devices are
+            not scanned.
+        """
+
+        targets = []
+        if self.config["scan_dataset_ips"]:
+            targets.extend(str(ip.ip_addr) for ip in ip_addresses)
+        else:
+            requested = set(self.targets.addresses)
+            targets.extend(str(ip.ip_addr) for ip in ip_addresses if str(ip.ip_addr) in requested)
+        flagged = {str(ip.ip_addr) for ip in ip_addresses if ip.multi_device}
+        if flagged:
+            logger.info(f"    -- {len(flagged)} multi-device IPs are not scanned")
+        return [target for target in dict.fromkeys(targets) if target not in flagged]
+
+    def before_run(self, ip_addresses: list, flows_by_ip: dict) -> None:
+        """Run the active scan of this run's IPs and parse its report.
+
+        Parameters
+        ----------
+        ip_addresses : list
+            IP objects annotated in this run.
+        flows_by_ip : dict
+            Not used.
+        """
+
+        if self.mode != "active":
+            return
+        targets = self.select_scan_targets(ip_addresses)
+        if not targets:
+            logger.info("    -- no IPs to scan")
+            self.evidence_by_ip = {}
+            return
+        if self.scanner.scan(targets, self.output_xml):
+            self.evidence_by_ip = NmapReportParser.parse(self.output_xml)
+        else:
+            self.evidence_by_ip = {}
 
     def annotate_ip(self, ip) -> None:
         """Translate the Nmap evidence of one IP into an annotation.
